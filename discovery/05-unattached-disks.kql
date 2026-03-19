@@ -1,0 +1,21 @@
+// Unattached Managed Disks
+// Disks not attached to any VM are costing money for no reason.
+// Usually safe to delete after confirming no one needs the data.
+
+resources
+| where type == "microsoft.compute/disks"
+| where properties.diskState == "Unattached"
+| extend sizeGB = tostring(properties.diskSizeGB)
+| extend createdTime = todatetime(properties.timeCreated)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    sizeGB,
+    sku = tostring(sku.name),
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc

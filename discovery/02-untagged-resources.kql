@@ -1,0 +1,14 @@
+// Untagged Resources
+// Finds resources with no tags at all — strong indicator of unmanaged resources.
+// These are prime candidates for cleanup review.
+
+resources
+| where isnull(tags) or tags == "{}" or array_length(bag_keys(tags)) == 0
+| summarize count() by type, subscriptionId
+| order by count_ desc
+
+// Detailed view of untagged resources:
+// resources
+// | where isnull(tags) or tags == "{}" or array_length(bag_keys(tags)) == 0
+// | project subscriptionId, resourceGroup, name, type, location
+// | order by type asc, name asc

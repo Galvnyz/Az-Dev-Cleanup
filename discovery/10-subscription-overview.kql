@@ -1,0 +1,17 @@
+// Subscription Overview
+// High-level summary of resource counts and types per subscription.
+// Helps identify which subscriptions need the most attention.
+
+resources
+| summarize
+    total_resources = count(),
+    resource_types = dcount(type),
+    resource_groups = dcount(resourceGroup),
+    locations = dcount(location)
+    by subscriptionId
+| order by total_resources desc
+
+// Resource type breakdown per subscription:
+// resources
+// | summarize count() by subscriptionId, type
+// | order by subscriptionId asc, count_ desc

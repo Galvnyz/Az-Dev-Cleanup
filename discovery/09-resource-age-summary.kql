@@ -1,0 +1,17 @@
+// Resource Age Summary
+// Groups all resources by type and age bracket to show where the oldest resources are.
+
+resources
+| extend createdTime = todatetime(properties.creationTime)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend age_bracket = case(
+    age_days <= 30, "0-30 days",
+    age_days <= 90, "31-90 days",
+    age_days <= 180, "91-180 days",
+    age_days <= 365, "181-365 days",
+    age_days <= 730, "1-2 years",
+    age_days <= 1825, "2-5 years",
+    "5+ years"
+)
+| summarize count() by type, age_bracket
+| order by type asc, count_ desc

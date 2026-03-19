@@ -1,0 +1,145 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-08-01/managementGroupDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Azure Policy initiative that requires mandatory tags on all new resources. Deploy in 'Audit' mode first, then switch to 'Deny' once teams are compliant."
+  },
+  "variables": {
+    "policySetName": "require-mandatory-tags",
+    "policySetDisplayName": "Require Mandatory Tags on Resources"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/policyDefinitions",
+      "apiVersion": "2021-06-01",
+      "name": "require-owner-tag",
+      "properties": {
+        "policyType": "Custom",
+        "mode": "Indexed",
+        "displayName": "Require 'owner' tag on resources",
+        "description": "Resources must have an 'owner' tag identifying who is responsible for the resource.",
+        "metadata": {
+          "category": "Tags"
+        },
+        "parameters": {
+          "effect": {
+            "type": "String",
+            "metadata": {
+              "displayName": "Effect",
+              "description": "Audit or Deny"
+            },
+            "allowedValues": ["Audit", "Deny", "Disabled"],
+            "defaultValue": "Audit"
+          }
+        },
+        "policyRule": {
+          "if": {
+            "field": "tags['owner']",
+            "exists": "false"
+          },
+          "then": {
+            "effect": "[parameters('effect')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/policyDefinitions",
+      "apiVersion": "2021-06-01",
+      "name": "require-project-tag",
+      "properties": {
+        "policyType": "Custom",
+        "mode": "Indexed",
+        "displayName": "Require 'project' tag on resources",
+        "description": "Resources must have a 'project' tag to identify which project they belong to.",
+        "metadata": {
+          "category": "Tags"
+        },
+        "parameters": {
+          "effect": {
+            "type": "String",
+            "allowedValues": ["Audit", "Deny", "Disabled"],
+            "defaultValue": "Audit"
+          }
+        },
+        "policyRule": {
+          "if": {
+            "field": "tags['project']",
+            "exists": "false"
+          },
+          "then": {
+            "effect": "[parameters('effect')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/policyDefinitions",
+      "apiVersion": "2021-06-01",
+      "name": "require-environment-tag",
+      "properties": {
+        "policyType": "Custom",
+        "mode": "Indexed",
+        "displayName": "Require 'environment' tag on resources",
+        "description": "Resources must have an 'environment' tag (dev, staging, prod, sandbox).",
+        "metadata": {
+          "category": "Tags"
+        },
+        "parameters": {
+          "effect": {
+            "type": "String",
+            "allowedValues": ["Audit", "Deny", "Disabled"],
+            "defaultValue": "Audit"
+          }
+        },
+        "policyRule": {
+          "if": {
+            "field": "tags['environment']",
+            "exists": "false"
+          },
+          "then": {
+            "effect": "[parameters('effect')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/policyDefinitions",
+      "apiVersion": "2021-06-01",
+      "name": "require-expiry-tag-dev",
+      "properties": {
+        "policyType": "Custom",
+        "mode": "Indexed",
+        "displayName": "Require 'expiry-date' tag on dev resources",
+        "description": "Dev/sandbox resources must have an expiry-date tag to enable automated TTL cleanup.",
+        "metadata": {
+          "category": "Tags"
+        },
+        "parameters": {
+          "effect": {
+            "type": "String",
+            "allowedValues": ["Audit", "Deny", "Disabled"],
+            "defaultValue": "Audit"
+          }
+        },
+        "policyRule": {
+          "if": {
+            "allOf": [
+              {
+                "field": "tags['environment']",
+                "in": ["dev", "development", "sandbox", "test"]
+              },
+              {
+                "field": "tags['expiry-date']",
+                "exists": "false"
+              }
+            ]
+          },
+          "then": {
+            "effect": "[parameters('effect')]"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-08-01/managementGroupDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Azure Policy to deny creation of resource types that are deprecated or should no longer be used in the tenant. Update the list based on your organization's standards."
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/policyDefinitions",
+      "apiVersion": "2021-06-01",
+      "name": "deny-deprecated-resource-types",
+      "properties": {
+        "policyType": "Custom",
+        "mode": "All",
+        "displayName": "Deny deprecated resource types",
+        "description": "Prevents creation of resource types that should no longer be used. Update the list as standards evolve.",
+        "metadata": {
+          "category": "General"
+        },
+        "parameters": {
+          "deniedResourceTypes": {
+            "type": "Array",
+            "metadata": {
+              "displayName": "Denied resource types",
+              "description": "Resource types that should not be created."
+            },
+            "defaultValue": [
+              "Microsoft.ClassicCompute/virtualMachines",
+              "Microsoft.ClassicStorage/storageAccounts",
+              "Microsoft.ClassicNetwork/virtualNetworks"
+            ]
+          }
+        },
+        "policyRule": {
+          "if": {
+            "field": "type",
+            "in": "[parameters('deniedResourceTypes')]"
+          },
+          "then": {
+            "effect": "Deny"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+// Full Resource Inventory
+// Returns every resource across all subscriptions with key metadata.
+// Use this as your starting point to understand the tenant landscape.
+
+resources
+| extend createdTime = todatetime(properties.creationTime)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    type,
+    location,
+    kind,
+    sku = tostring(sku.name),
+    tags,
+    createdTime,
+    age_days,
+    provisioningState = tostring(properties.provisioningState)
+| order by age_days desc

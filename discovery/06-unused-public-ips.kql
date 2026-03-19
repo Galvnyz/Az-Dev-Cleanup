@@ -1,0 +1,17 @@
+// Unused Public IP Addresses
+// Public IPs not associated with any resource still incur charges
+// and represent unnecessary attack surface.
+
+resources
+| where type == "microsoft.network/publicipaddresses"
+| where isnull(properties.ipConfiguration) and isnull(properties.natGateway)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    ipAddress = tostring(properties.ipAddress),
+    sku = tostring(sku.name),
+    allocationMethod = tostring(properties.publicIPAllocationMethod),
+    tags
+| order by subscriptionId asc, name asc

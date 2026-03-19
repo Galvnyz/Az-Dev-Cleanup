@@ -1,0 +1,21 @@
+// Stopped / Deallocated Virtual Machines
+// VMs in a stopped or deallocated state still incur storage costs.
+// Long-stopped VMs are strong cleanup candidates.
+
+resources
+| where type == "microsoft.compute/virtualmachines"
+| extend vmState = tostring(properties.extended.instanceView.powerState.displayStatus)
+| where vmState in ("VM deallocated", "VM stopped")
+| extend createdTime = todatetime(properties.timeCreated)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    vmSize = tostring(properties.hardwareProfile.vmSize),
+    vmState,
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc

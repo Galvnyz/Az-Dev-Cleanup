@@ -1,0 +1,20 @@
+// Old Disk Snapshots
+// Snapshots older than 90 days are often forgotten leftovers.
+// They consume storage and cost money.
+
+resources
+| where type == "microsoft.compute/snapshots"
+| extend createdTime = todatetime(properties.timeCreated)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| where age_days > 90
+| extend sizeGB = tostring(properties.diskSizeGB)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    sizeGB,
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc

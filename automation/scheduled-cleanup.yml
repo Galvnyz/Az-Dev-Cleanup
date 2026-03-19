@@ -1,0 +1,152 @@
+# GitHub Actions workflow for scheduled tenant cleanup
+# Runs discovery weekly and expired-resource cleanup daily.
+#
+# Prerequisites:
+#   1. Create an Azure Service Principal with Contributor + Reader role
+#   2. Store credentials as GitHub secrets:
+#      - AZURE_CLIENT_ID
+#      - AZURE_TENANT_ID
+#      - AZURE_SUBSCRIPTION_ID
+#      - AZURE_CLIENT_SECRET (or use OIDC federated credentials)
+
+name: Azure Tenant Cleanup
+
+on:
+  schedule:
+    # Discovery report: Every Monday at 6am UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - discovery-only
+          - cleanup-dry-run
+          - cleanup-execute
+
+permissions:
+  contents: read
+  id-token: write  # Required for OIDC auth
+
+env:
+  SCRIPTS_PATH: ./cleanup
+  DISCOVERY_PATH: ./discovery
+
+jobs:
+  discovery:
+    name: Resource Discovery
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 6 * * 1' || github.event.inputs.action == 'discovery-only'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run Resource Graph Queries
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            # Run each KQL query and export results
+            $queries = Get-ChildItem -Path "${{ env.DISCOVERY_PATH }}" -Filter "*.kql"
+            $reportDir = "./reports/$(Get-Date -Format 'yyyy-MM-dd')"
+            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+
+            foreach ($queryFile in $queries) {
+                $queryName = $queryFile.BaseName
+                Write-Output "Running query: $queryName"
+                $query = Get-Content $queryFile.FullName -Raw
+
+                # Strip comments for Resource Graph API
+                $cleanQuery = ($query -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+
+                try {
+                    $results = Search-AzGraph -Query $cleanQuery -First 1000
+                    if ($results.Count -gt 0) {
+                        $results | Export-Csv -Path "$reportDir/$queryName.csv" -NoTypeInformation
+                        Write-Output "  Found $($results.Count) results"
+                    } else {
+                        Write-Output "  No results"
+                    }
+                } catch {
+                    Write-Output "  Query failed: $_"
+                }
+            }
+
+      - name: Upload Discovery Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-reports-${{ github.run_number }}
+          path: ./reports/
+          retention-days: 90
+
+  cleanup-dry-run:
+    name: Cleanup Dry Run
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'cleanup-dry-run'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Dry Run - Expired Resources
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1" -DryRun
+
+      - name: Dry Run - Empty Resource Groups
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            & "${{ env.SCRIPTS_PATH }}/Remove-EmptyResourceGroups.ps1" -WhatIf
+
+  cleanup-execute:
+    name: Cleanup Execute
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'cleanup-execute'
+    environment: production  # Requires manual approval
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Remove Expired Resources
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1"
+
+      - name: Remove Empty Resource Groups
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            & "${{ env.SCRIPTS_PATH }}/Remove-EmptyResourceGroups.ps1" -Force
+
+      - name: Upload Cleanup Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-logs-${{ github.run_number }}
+          path: ./cleanup-log-*.csv
+          retention-days: 365

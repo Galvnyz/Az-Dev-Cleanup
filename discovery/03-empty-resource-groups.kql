@@ -1,0 +1,13 @@
+// Empty Resource Groups
+// Finds resource groups that contain zero resources.
+// These are safe to delete and reduce clutter.
+
+resourcecontainers
+| where type == "microsoft.resources/subscriptions/resourcegroups"
+| join kind=leftouter (
+    resources
+    | summarize resource_count = count() by resourceGroup = tostring(split(id, '/')[4]), subscriptionId
+) on resourceGroup, subscriptionId
+| where isnull(resource_count) or resource_count == 0
+| project subscriptionId, name, location, tags
+| order by subscriptionId asc, name asc

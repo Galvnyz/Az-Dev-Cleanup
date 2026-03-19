@@ -1,0 +1,15 @@
+// Unused Network Security Groups
+// NSGs not attached to any subnet or NIC serve no purpose.
+
+resources
+| where type == "microsoft.network/networksecuritygroups"
+| where isnull(properties.networkInterfaces) or array_length(properties.networkInterfaces) == 0
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    ruleCount = array_length(properties.securityRules),
+    tags
+| order by subscriptionId asc, name asc
