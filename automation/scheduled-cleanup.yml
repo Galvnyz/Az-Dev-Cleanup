@@ -49,36 +49,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Run Resource Graph Queries
+      - name: Run Tenant Discovery
         uses: azure/powershell@v2
         with:
           azPSVersion: latest
           inlineScript: |
-            # Run each KQL query and export results
-            $queries = Get-ChildItem -Path "${{ env.DISCOVERY_PATH }}" -Filter "*.kql"
-            $reportDir = "./reports/$(Get-Date -Format 'yyyy-MM-dd')"
-            New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-
-            foreach ($queryFile in $queries) {
-                $queryName = $queryFile.BaseName
-                Write-Output "Running query: $queryName"
-                $query = Get-Content $queryFile.FullName -Raw
-
-                # Strip comments for Resource Graph API
-                $cleanQuery = ($query -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
-
-                try {
-                    $results = Search-AzGraph -Query $cleanQuery -First 1000
-                    if ($results.Count -gt 0) {
-                        $results | Export-Csv -Path "$reportDir/$queryName.csv" -NoTypeInformation
-                        Write-Output "  Found $($results.Count) results"
-                    } else {
-                        Write-Output "  No results"
-                    }
-                } catch {
-                    Write-Output "  Query failed: $_"
-                }
-            }
+            & "./discovery/Invoke-TenantDiscovery.ps1" `
+              -OutputDir "./reports/$(Get-Date -Format 'yyyy-MM-dd')-run${{ github.run_number }}"
 
       - name: Upload Discovery Reports
         uses: actions/upload-artifact@v4

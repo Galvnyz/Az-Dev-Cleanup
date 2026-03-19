@@ -1,0 +1,113 @@
+# Standalone discovery workflow
+# Runs Invoke-TenantDiscovery.ps1 on a schedule or on demand.
+#
+# Artifacts are retained for 90 days. Each run produces:
+#   - Individual query CSVs
+#   - Activity log analysis
+#   - Cost breakdown by resource group
+#   - Orphaned resource group report
+#   - Markdown summary report (REPORT.md)
+
+name: Tenant Discovery
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday 6am UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Discovery mode'
+        required: true
+        type: choice
+        options:
+          - full            # All phases: KQL + Activity + Cost + Entra ID
+          - quick           # KQL queries only (fastest)
+          - no-cost         # Skip cost data pull
+      subscription_id:
+        description: 'Target a single subscription (leave blank for all)'
+        required: false
+        type: string
+      lookback_days:
+        description: 'Activity log lookback in days'
+        required: false
+        default: '90'
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  discover:
+    name: Run Discovery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run Invoke-TenantDiscovery
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            $params = @{}
+
+            # Mode flags
+            $mode = "${{ github.event.inputs.mode }}"
+            if ($mode -eq "" ) { $mode = "full" }
+
+            if ($mode -eq "quick") {
+                $params.SkipActivityLog = $true
+                $params.SkipCostData = $true
+                $params.SkipEntraId = $true
+            }
+            if ($mode -eq "no-cost") {
+                $params.SkipCostData = $true
+            }
+
+            # Optional subscription filter
+            $subId = "${{ github.event.inputs.subscription_id }}"
+            if ($subId -ne "") {
+                $params.SubscriptionId = @($subId)
+            }
+
+            # Lookback
+            $lookback = "${{ github.event.inputs.lookback_days }}"
+            if ($lookback -ne "") {
+                $params.LookbackDays = [int]$lookback
+            }
+
+            # Output directory
+            $params.OutputDir = "./reports/$(Get-Date -Format 'yyyy-MM-dd')-run${{ github.run_number }}"
+
+            Write-Output "Discovery parameters:"
+            $params | Format-Table
+
+            & "./discovery/Invoke-TenantDiscovery.ps1" @params
+
+      - name: Show Summary
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            $reportDir = Get-ChildItem -Path "./reports" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            if ($reportDir -and (Test-Path "$($reportDir.FullName)/REPORT.md")) {
+                Get-Content "$($reportDir.FullName)/REPORT.md"
+            }
+            if ($reportDir -and (Test-Path "$($reportDir.FullName)/summary.json")) {
+                Write-Output "`n--- Raw Summary ---"
+                Get-Content "$($reportDir.FullName)/summary.json"
+            }
+
+      - name: Upload Discovery Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-${{ github.run_number }}-${{ github.event.inputs.mode || 'scheduled' }}
+          path: ./reports/
+          retention-days: 90
