@@ -446,11 +446,22 @@ if (-not $SkipEntraId) {
 
         $activeUPNs = @{}
         $knownUPNs = @{}
+        $nullAccountEnabled = 0
         foreach ($u in $allUsers) {
+            if ($null -eq $u.AccountEnabled) { $nullAccountEnabled++ }
             $knownUPNs[$u.UserPrincipalName] = $u.AccountEnabled
             if ($u.AccountEnabled) { $activeUPNs[$u.UserPrincipalName] = $true }
         }
         Write-Log "  Loaded $($allUsers.Count) Entra ID users ($($activeUPNs.Count) active) in $([math]::Round($userTimer.Elapsed.TotalSeconds, 1))s"
+
+        # Detect missing AccountEnabled property — indicates insufficient Graph permissions
+        if ($allUsers.Count -gt 0 -and $activeUPNs.Count -eq 0 -and $nullAccountEnabled -gt 0) {
+            Write-Log "  WARNING: AccountEnabled is null for all $nullAccountEnabled users — your token likely lacks User.Read.All Graph permissions. Orphan detection will produce false positives. Skipping." -Level "WARN"
+            Write-Log "  To fix: Connect-AzAccount -AuthScope 'https://graph.microsoft.com/.default' or grant User.Read.All to your service principal" -Level "WARN"
+            $phase4Timer.Stop()
+            Write-Log "  Phase 4 total: $([math]::Round($phase4Timer.Elapsed.TotalSeconds, 1))s (skipped — insufficient permissions)"
+        } else {
+
         if ($allUsers.Count -ge 10000) {
             Write-Log "  WARNING: User count hit the 10,000 limit — results may be incomplete. Consider paginating." -Level "WARN"
         }
@@ -580,6 +591,8 @@ if (-not $SkipEntraId) {
         } else {
             Write-Log "  No orphaned resource groups found"
         }
+
+        } # end else (sufficient permissions)
     } catch {
         Write-Log "  Entra ID access failed: $_" -Level "ERROR"
     }
