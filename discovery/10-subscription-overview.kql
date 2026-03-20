@@ -1,17 +1,23 @@
 // Subscription Overview
 // High-level summary of resource counts and types per subscription.
-// Helps identify which subscriptions need the most attention.
+// Uses resourcecontainers to include subscriptions with zero resources.
 
-resources
-| summarize
-    total_resources = count(),
-    resource_types = dcount(type),
-    resource_groups = dcount(resourceGroup),
-    locations = dcount(location)
-    by subscriptionId
+resourcecontainers
+| where type =~ "microsoft.resources/subscriptions"
+| project subscriptionId, subscriptionName = name
+| join kind=leftouter (
+    resources
+    | summarize
+        total_resources = count(),
+        resource_types = dcount(type),
+        resource_groups = dcount(resourceGroup),
+        locations = dcount(location)
+        by subscriptionId
+) on subscriptionId
+| extend
+    total_resources = coalesce(total_resources, 0),
+    resource_types = coalesce(resource_types, 0),
+    resource_groups = coalesce(resource_groups, 0),
+    locations = coalesce(locations, 0)
+| project subscriptionId, subscriptionName, total_resources, resource_types, resource_groups, locations
 | order by total_resources desc
-
-// Resource type breakdown per subscription:
-// resources
-// | summarize count() by subscriptionId, type
-// | order by subscriptionId asc, count_ desc

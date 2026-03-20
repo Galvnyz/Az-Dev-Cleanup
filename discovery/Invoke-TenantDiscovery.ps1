@@ -339,7 +339,7 @@ if (-not $SkipActivityLog) {
     Write-Log "--- Phase 2: Activity Log Analysis (SKIPPED) ---"
 }
 
-# ── Phase 3: Cost Analysis ──────────────────────────────────────────────────
+# ── Phase 3: Cost Analysis (Cost Management Query API) ────────────────────────
 
 if (-not $SkipCostData) {
     Write-Log "--- Phase 3: Cost Analysis ---"
@@ -351,30 +351,62 @@ if (-not $SkipCostData) {
 
     $phase3Timer = [System.Diagnostics.Stopwatch]::StartNew()
 
+    # Cost Management Query API — server-side aggregation by resource group
+    $costQueryBody = @{
+        type = "ActualCost"
+        timeframe = "Custom"
+        timePeriod = @{ from = $costStart; to = $costEnd }
+        dataset = @{
+            granularity = "None"
+            aggregation = @{
+                totalCost = @{ name = "Cost"; function = "Sum" }
+            }
+            grouping = @(
+                @{ type = "Dimension"; name = "ResourceGroupName" }
+            )
+        }
+    } | ConvertTo-Json -Depth 5
+
     $costResults = $subscriptions | ForEach-Object -Parallel {
         $sub = $_
-        Import-Module Az.Accounts, Az.Billing -ErrorAction Stop
+        Import-Module Az.Accounts -ErrorAction Stop
         Disable-AzContextAutosave -Scope Process -ErrorAction SilentlyContinue | Out-Null
         [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
         Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $usage = Get-AzConsumptionUsageDetail -StartDate $using:costStart -EndDate $using:costEnd -ErrorAction Stop
+            $apiPath = "/subscriptions/$($sub.Id)/providers/Microsoft.CostManagement/query?api-version=2023-11-01"
+            $response = Invoke-AzRestMethod -Path $apiPath -Method POST -Payload $using:costQueryBody
             $sw.Stop()
-            [PSCustomObject]@{
-                SubId   = $sub.Id
-                SubName = $sub.Name
-                Usage   = $usage
-                Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-                Error   = $null
+
+            if ($response.StatusCode -ne 200) {
+                $errBody = $response.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+                $errMsg = if ($errBody.error.message) { $errBody.error.message } else { "HTTP $($response.StatusCode)" }
+                [PSCustomObject]@{
+                    SubId   = $sub.Id
+                    SubName = $sub.Name
+                    Rows    = @()
+                    Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                    Error   = $errMsg
+                }
+            } else {
+                $parsed = $response.Content | ConvertFrom-Json
+                [PSCustomObject]@{
+                    SubId   = $sub.Id
+                    SubName = $sub.Name
+                    Rows    = @($parsed.properties.rows)
+                    Columns = @($parsed.properties.columns)
+                    Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                    Error   = $null
+                }
             }
         } catch {
             $sw.Stop()
             [PSCustomObject]@{
                 SubId   = $sub.Id
                 SubName = $sub.Name
-                Usage   = @()
+                Rows    = @()
                 Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
                 Error   = $_.ToString()
             }
@@ -387,26 +419,22 @@ if (-not $SkipCostData) {
             continue
         }
 
-        Write-Log "  $($r.SubName): $($r.Usage.Count) usage records in $($r.Elapsed)s"
+        Write-Log "  $($r.SubName): $($r.Rows.Count) resource groups in $($r.Elapsed)s"
 
-        foreach ($item in $r.Usage) {
-            $rg = if ($item.InstanceId) {
-                $parts = $item.InstanceId -split '/'
-                $rgIdx = [array]::IndexOf($parts, 'resourceGroups')
-                if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) { $parts[$rgIdx + 1] } else { "(unknown)" }
-            } else { "(unknown)" }
+        foreach ($row in $r.Rows) {
+            # Cost Management query returns: [cost, resourceGroupName, currency]
+            $cost = [decimal]$row[0]
+            $rg = $row[1]
+            $currency = $row[2]
 
             $key = "$($r.SubId)/$rg"
-            if (-not $costByRG.ContainsKey($key)) {
-                $costByRG[$key] = [PSCustomObject]@{
-                    SubscriptionId   = $r.SubId
-                    SubscriptionName = $r.SubName
-                    ResourceGroup    = $rg
-                    TotalCost        = [decimal]0
-                    Currency         = $item.BillingCurrency
-                }
+            $costByRG[$key] = [PSCustomObject]@{
+                SubscriptionId   = $r.SubId
+                SubscriptionName = $r.SubName
+                ResourceGroup    = $rg
+                TotalCost        = [math]::Round($cost, 2)
+                Currency         = $currency
             }
-            $costByRG[$key].TotalCost += [decimal]$item.PretaxCost
         }
     }
 
@@ -422,7 +450,7 @@ if (-not $SkipCostData) {
         $zeroCostRGs = ($costReport | Where-Object { $_.TotalCost -eq 0 }).Count
         $summary.TotalCostLast30Days = [math]::Round($totalCost, 2)
         $summary.ZeroCostResourceGroups = $zeroCostRGs
-        Write-Log "  Total cost (last $CostLookbackDays days): $([math]::Round($totalCost, 2))"
+        Write-Log "  Total cost (last $CostLookbackDays days): `$$([math]::Round($totalCost, 2))"
         Write-Log "  Resource groups with zero cost: $zeroCostRGs"
 
         $topSpenders = $costReport | Select-Object -First 20
