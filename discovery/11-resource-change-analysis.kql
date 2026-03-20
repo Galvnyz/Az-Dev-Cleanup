@@ -3,34 +3,33 @@
 // how many changes occurred in the last 90 days, and how long since the last change.
 // Resources with zero changes are strong staleness candidates.
 
-resourcechanges
-| where properties.changeAttributes.timestamp > ago(90d)
+resources
+| project resourceId = id, subscriptionId, resourceGroup, name, type, location, tags
+| join kind=leftouter (
+    resourcechanges
+    | where properties.changeAttributes.timestamp > ago(90d)
+    | extend
+        changeTimestamp = todatetime(properties.changeAttributes.timestamp),
+        changedBy = tostring(properties.changeAttributes.changedBy),
+        changedByType = tostring(properties.changeAttributes.changedByType),
+        changeType = tostring(properties.changeType),
+        targetResourceId = tostring(properties.targetResourceId)
+    | summarize
+        lastChangeTime = max(changeTimestamp),
+        lastChangedBy = arg_max(changeTimestamp, changedBy).changedBy,
+        lastChangedByType = arg_max(changeTimestamp, changedByType).changedByType,
+        lastChangeType = arg_max(changeTimestamp, changeType).changeType,
+        changeCount = count()
+        by targetResourceId
+) on $left.resourceId == $right.targetResourceId
 | extend
-    changeTimestamp = todatetime(properties.changeAttributes.timestamp),
-    changedBy = tostring(properties.changeAttributes.changedBy),
-    changedByType = tostring(properties.changeAttributes.changedByType),
-    changeType = tostring(properties.changeType),
-    resourceId = tostring(properties.targetResourceId)
-| summarize
-    lastChangeTime = max(changeTimestamp),
-    lastChangedBy = arg_max(changeTimestamp, changedBy).changedBy,
-    lastChangedByType = arg_max(changeTimestamp, changedByType).changedByType,
-    lastChangeType = arg_max(changeTimestamp, changeType).changeType,
-    changeCount = count()
-    by resourceId
-| extend daysSinceLastChange = datetime_diff('day', now(), lastChangeTime)
-| join kind=rightouter (
-    resources
-    | project resourceId = id, subscriptionId, resourceGroup, name, type, location, tags
-) on resourceId
-| extend
-    daysSinceLastChange = iff(isnull(daysSinceLastChange), 999, daysSinceLastChange),
+    daysSinceLastChange = iff(isnull(lastChangeTime), 999, datetime_diff('day', now(), lastChangeTime)),
     changeCount = iff(isnull(changeCount), 0, changeCount),
     lastChangedBy = iff(isempty(lastChangedBy), "no changes in 90d", lastChangedBy),
     lastChangedByType = iff(isempty(lastChangedByType), "none", lastChangedByType)
 | project
-    subscriptionId1, resourceGroup1, name1, type1, location1,
+    subscriptionId, resourceGroup, name, type, location,
     lastChangeTime, daysSinceLastChange,
     lastChangedBy, lastChangedByType, lastChangeType,
-    changeCount, tags1
+    changeCount, tags
 | order by daysSinceLastChange desc
