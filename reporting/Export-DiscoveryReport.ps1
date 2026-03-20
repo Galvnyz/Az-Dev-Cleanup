@@ -53,7 +53,14 @@ Import-Module ImportExcel
 $ReportDir = (Resolve-Path $ReportDir).Path
 
 if (-not $OutputPath) {
-    $OutputPath = Join-Path $ReportDir "discovery-report.xlsx"
+    # Extract timestamp from report directory name (yyyy-MM-dd-HHmmss) or use current time
+    $dirName = Split-Path $ReportDir -Leaf
+    if ($dirName -match '^\d{4}-\d{2}-\d{2}-\d{6}$') {
+        $timestamp = $dirName
+    } else {
+        $timestamp = Get-Date -Format 'yyyy-MM-dd-HHmmss'
+    }
+    $OutputPath = Join-Path $ReportDir "discovery-report-$timestamp.xlsx"
 }
 
 # Remove existing file — Export-Excel appends by default
