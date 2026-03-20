@@ -27,6 +27,12 @@ function Write-Log {
     Write-Output "[$timestamp] [$Level] $Message"
 }
 
+function Test-ResourceLocked {
+    param([string]$ResourceId)
+    $locks = Get-AzResourceLock -ResourceId $ResourceId -ErrorAction SilentlyContinue
+    return ($null -ne $locks -and $locks.Count -gt 0)
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 Write-Log "Starting unused public IP cleanup"
@@ -42,7 +48,7 @@ $results = @()
 
 foreach ($sub in $subscriptions) {
     Write-Log "Scanning subscription: $($sub.Name)"
-    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
     $publicIPs = Get-AzPublicIpAddress | Where-Object {
         $null -eq $_.IpConfiguration
@@ -58,6 +64,14 @@ foreach ($sub in $subscriptions) {
             IpAddress     = $pip.IpAddress
             SKU           = $pip.Sku.Name
             Action        = "Pending"
+        }
+
+        # Check for resource locks before attempting deletion
+        if (Test-ResourceLocked -ResourceId $pip.Id) {
+            Write-Log "Skipping locked public IP: $($pip.Name)" -Level "SKIP"
+            $result.Action = "Skipped (locked)"
+            $results += $result
+            continue
         }
 
         if ($PSCmdlet.ShouldProcess("$($pip.Name) ($($pip.IpAddress))", "Remove unused public IP")) {

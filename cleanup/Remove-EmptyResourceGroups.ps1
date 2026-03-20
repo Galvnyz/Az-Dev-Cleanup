@@ -53,6 +53,12 @@ function Test-Excluded {
     return $false
 }
 
+function Test-ResourceGroupLocked {
+    param([string]$ResourceGroupName)
+    $locks = Get-AzResourceLock -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+    return ($null -ne $locks -and $locks.Count -gt 0)
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 Write-Log "Starting empty resource group cleanup"
@@ -93,6 +99,15 @@ foreach ($sub in $subscriptions) {
                 ResourceGroup = $rg.ResourceGroupName
                 Location      = $rg.Location
                 Action        = "Pending"
+            }
+
+            # Check for resource locks before attempting deletion
+            if (Test-ResourceGroupLocked -ResourceGroupName $rg.ResourceGroupName) {
+                Write-Log "Skipping locked resource group: $($rg.ResourceGroupName)" -Level "SKIP"
+                $result.Action = "Skipped (locked)"
+                $totalSkipped++
+                $results += $result
+                continue
             }
 
             if ($PSCmdlet.ShouldProcess($rg.ResourceGroupName, "Remove empty resource group")) {

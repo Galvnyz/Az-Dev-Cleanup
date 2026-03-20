@@ -65,12 +65,15 @@ param(
     [switch]$SkipEntraId,
 
     [Parameter()]
+    [ValidateRange(1, 365)]
     [int]$LookbackDays = 90,
 
     [Parameter()]
+    [ValidateRange(1, 365)]
     [int]$CostLookbackDays = 30,
 
     [Parameter()]
+    [ValidateRange(100, 1000)]
     [int]$PageSize = 1000
 )
 
@@ -191,11 +194,16 @@ if (-not $SkipActivityLog) {
 
     foreach ($sub in $subscriptions) {
         Write-Log "  Scanning activity logs: $($sub.Name)"
-        Set-AzContext -SubscriptionId $sub.Id | Out-Null
+        Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
         try {
+            $activityLogLimit = 5000
             $logs = Get-AzActivityLog -StartTime $activityStart -EndTime (Get-Date) `
-                -MaxRecord 5000 -WarningAction SilentlyContinue
+                -MaxRecord $activityLogLimit -WarningAction SilentlyContinue
+
+            if ($logs.Count -ge $activityLogLimit) {
+                Write-Log "  WARNING: Activity log hit $activityLogLimit record limit for $($sub.Name) — results may be truncated. Consider reducing LookbackDays." -Level "WARN"
+            }
 
             foreach ($log in $logs) {
                 if ($null -eq $log.ResourceId) { continue }
@@ -249,7 +257,7 @@ if (-not $SkipCostData) {
 
     foreach ($sub in $subscriptions) {
         Write-Log "  Pulling cost data: $($sub.Name)"
-        Set-AzContext -SubscriptionId $sub.Id | Out-Null
+        Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
         try {
             $usage = Get-AzConsumptionUsageDetail -StartDate $costStart -EndDate $costEnd `
@@ -307,21 +315,32 @@ if (-not $SkipEntraId) {
     try {
         $allUsers = Get-AzADUser -First 10000
         $activeUPNs = @{}
+        $knownUPNs = @{}
         foreach ($u in $allUsers) {
+            $knownUPNs[$u.UserPrincipalName] = $u.AccountEnabled
             if ($u.AccountEnabled) { $activeUPNs[$u.UserPrincipalName] = $true }
         }
         Write-Log "  Loaded $($allUsers.Count) Entra ID users ($($activeUPNs.Count) active)"
+        if ($allUsers.Count -ge 10000) {
+            Write-Log "  WARNING: User count hit the 10,000 limit — results may be incomplete. Consider paginating." -Level "WARN"
+        }
 
         $orphanedRGs = @()
         $activityStart = (Get-Date).AddDays(-365)
 
         foreach ($sub in $subscriptions) {
-            Set-AzContext -SubscriptionId $sub.Id | Out-Null
+            Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
             try {
-                $createLogs = Get-AzActivityLog -StartTime $activityStart -EndTime (Get-Date) `
-                    -MaxRecord 5000 -WarningAction SilentlyContinue |
-                    Where-Object {
+                $orphanLogLimit = 5000
+                $rawOrphanLogs = Get-AzActivityLog -StartTime $activityStart -EndTime (Get-Date) `
+                    -MaxRecord $orphanLogLimit -WarningAction SilentlyContinue
+
+                if ($rawOrphanLogs.Count -ge $orphanLogLimit) {
+                    Write-Log "  WARNING: Orphan detection activity log hit $orphanLogLimit record limit for $($sub.Name) — results may be truncated" -Level "WARN"
+                }
+
+                $createLogs = $rawOrphanLogs | Where-Object {
                         $_.OperationName.Value -match "resourcegroups/write$" -and
                         $_.Status.Value -eq "Succeeded" -and
                         $_.Caller -match "@"
@@ -330,12 +349,17 @@ if (-not $SkipEntraId) {
                 foreach ($log in $createLogs) {
                     $creator = $log.Caller
                     if (-not $activeUPNs.ContainsKey($creator)) {
+                        # Extract RG name from the resourceGroups segment, not the last path element
+                        $idParts = $log.ResourceId -split '/'
+                        $rgIdx = [array]::IndexOf($idParts, 'resourceGroups')
+                        $rgName = if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $idParts.Length) { $idParts[$rgIdx + 1] } else { $idParts[-1] }
+
                         $orphanedRGs += [PSCustomObject]@{
                             SubscriptionId   = $sub.Id
                             SubscriptionName = $sub.Name
-                            ResourceGroup    = ($log.ResourceId -split '/')[-1]
+                            ResourceGroup    = $rgName
                             Creator          = $creator
-                            CreatorStatus    = if ($allUsers | Where-Object { $_.UserPrincipalName -eq $creator }) { "Disabled" } else { "Deleted" }
+                            CreatorStatus    = if ($knownUPNs.ContainsKey($creator)) { "Disabled" } else { "Deleted" }
                             CreatedDate      = $log.EventTimestamp
                         }
                     }
