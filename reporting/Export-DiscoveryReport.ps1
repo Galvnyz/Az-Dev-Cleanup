@@ -104,6 +104,7 @@ $worksheetMap = [ordered]@{
     "queries/20-sql-database-inventory"  = "SQL Databases"
     "resource-group-activity"            = "RG Activity"
     "resource-last-touch"                = "Resource Last Touch"
+    "metric-staleness"                   = "Metric Staleness"
     "cost-by-resource-group"             = "Cost by RG"
     "top-20-cost-resource-groups"        = "Top 20 Cost RGs"
     "orphaned-resource-groups"           = "Orphaned RGs"
