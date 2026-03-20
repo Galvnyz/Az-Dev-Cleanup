@@ -32,6 +32,7 @@ param(
     [switch]$SnapshotBeforeDelete,
 
     [Parameter()]
+    [ValidateRange(0, 3650)]
     [int]$MinAgeDays = 30
 )
 
@@ -41,6 +42,12 @@ function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Output "[$timestamp] [$Level] $Message"
+}
+
+function Test-ResourceLocked {
+    param([string]$ResourceId)
+    $locks = Get-AzResourceLock -ResourceId $ResourceId -ErrorAction SilentlyContinue
+    return ($null -ne $locks -and $locks.Count -gt 0)
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -59,7 +66,7 @@ $results = @()
 
 foreach ($sub in $subscriptions) {
     Write-Log "Scanning subscription: $($sub.Name)"
-    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
     $disks = Get-AzDisk | Where-Object {
         $_.DiskState -eq "Unattached" -and
@@ -80,6 +87,14 @@ foreach ($sub in $subscriptions) {
             Action        = "Pending"
         }
 
+        # Check for resource locks before attempting deletion
+        if (Test-ResourceLocked -ResourceId $disk.Id) {
+            Write-Log "Skipping locked disk: $($disk.Name)" -Level "SKIP"
+            $result.Action = "Skipped (locked)"
+            $results += $result
+            continue
+        }
+
         if ($PSCmdlet.ShouldProcess("$($disk.Name) ($($disk.DiskSizeGB) GB, $ageDays days old)", "Remove unattached disk")) {
 
             # Optional: snapshot before delete
@@ -87,8 +102,15 @@ foreach ($sub in $subscriptions) {
                 try {
                     $snapshotName = "cleanup-$($disk.Name)-$(Get-Date -Format 'yyyyMMdd')"
                     $snapshotConfig = New-AzSnapshotConfig -SourceUri $disk.Id -Location $disk.Location -CreateOption Copy
-                    New-AzSnapshot -ResourceGroupName $disk.ResourceGroupName -SnapshotName $snapshotName -Snapshot $snapshotConfig | Out-Null
-                    Write-Log "Created safety snapshot: $snapshotName" -Level "SNAPSHOT"
+                    $snapshot = New-AzSnapshot -ResourceGroupName $disk.ResourceGroupName -SnapshotName $snapshotName -Snapshot $snapshotConfig
+
+                    if ($snapshot.ProvisioningState -ne 'Succeeded') {
+                        Write-Log "Snapshot '$snapshotName' finished with state '$($snapshot.ProvisioningState)' — skipping deletion of $($disk.Name)" -Level "ERROR"
+                        $result.Action = "Snapshot not succeeded ($($snapshot.ProvisioningState)), skipped"
+                        $results += $result
+                        continue
+                    }
+                    Write-Log "Created safety snapshot: $snapshotName (ProvisioningState: Succeeded)" -Level "SNAPSHOT"
                 } catch {
                     Write-Log "Failed to snapshot $($disk.Name), skipping deletion: $_" -Level "ERROR"
                     $result.Action = "Snapshot failed, skipped"

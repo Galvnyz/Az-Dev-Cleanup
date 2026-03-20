@@ -1,7 +1,12 @@
-// Full Resource Inventory
-// Returns every resource across all subscriptions with key metadata.
-// Tries multiple property name variants for creation/modification timestamps
-// since different Azure resource providers use different property names.
+// Resource Change Analysis
+// Combines resource-level timestamps (systemData, provider-specific properties)
+// with the resourcechanges table (when available) to determine last modification.
+//
+// NOTE: The resourcechanges table requires Microsoft.ChangeAnalysis provider
+// to be registered. If not registered, this query still works but only shows
+// resource-level timestamps without change history detail.
+//
+// To enable: Register-AzResourceProvider -ProviderNamespace Microsoft.ChangeAnalysis
 
 resources
 | extend createdTime = coalesce(
@@ -10,10 +15,8 @@ resources
     todatetime(properties.creationDate),
     todatetime(properties.created),
     todatetime(properties.createdAt),
-    todatetime(properties.provisioningTimestamp),
     todatetime(properties.systemData.createdAt)
   )
-| extend age_days = datetime_diff('day', now(), createdTime)
 | extend lastModified = coalesce(
     todatetime(properties.changedTime),
     todatetime(properties.lastModifiedTime),
@@ -21,24 +24,23 @@ resources
     todatetime(properties.lastUpdated),
     todatetime(properties.systemData.lastModifiedAt)
   )
-| extend daysSinceModified = datetime_diff('day', now(), lastModified)
 | extend lastModifiedBy = coalesce(
     tostring(properties.systemData.lastModifiedBy),
     tostring(properties.lastModifiedBy)
   )
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend daysSinceModified = datetime_diff('day', now(), lastModified)
 | project
     subscriptionId,
     resourceGroup,
     name,
     type,
     location,
-    kind,
-    sku = tostring(sku.name),
-    tags,
     createdTime,
     age_days,
     lastModified,
     daysSinceModified,
     lastModifiedBy,
-    provisioningState = tostring(properties.provisioningState)
-| order by age_days desc
+    hasTimestamps = isnotnull(createdTime) or isnotnull(lastModified),
+    tags
+| order by daysSinceModified desc, age_days desc

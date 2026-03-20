@@ -27,6 +27,7 @@ param(
     [string]$SubscriptionId,
 
     [Parameter()]
+    [ValidateRange(1, 365)]
     [int]$LookbackDays = 365,
 
     [Parameter()]
@@ -57,10 +58,14 @@ $results = @()
 # Build a cache of known Entra ID users
 Write-Log "Loading Entra ID user directory..."
 try {
-    $allUsers = Get-AzADUser -First 10000
+    $userLimit = 10000
+    $allUsers = Get-AzADUser -First $userLimit
     $activeUPNs = $allUsers | Where-Object { $_.AccountEnabled -eq $true } | ForEach-Object { $_.UserPrincipalName }
     $disabledUPNs = $allUsers | Where-Object { $_.AccountEnabled -eq $false } | ForEach-Object { $_.UserPrincipalName }
     Write-Log "Loaded $($allUsers.Count) users ($($activeUPNs.Count) active, $($disabledUPNs.Count) disabled)"
+    if ($allUsers.Count -ge $userLimit) {
+        Write-Log "WARNING: User count hit the $userLimit limit — orphan detection may miss users beyond this limit. Consider paginating with Get-MgUser." -Level "WARN"
+    }
 } catch {
     Write-Log "Could not load Entra ID users. Ensure you have Directory.Read.All permissions: $_" -Level "ERROR"
     return
@@ -68,12 +73,18 @@ try {
 
 foreach ($sub in $subscriptions) {
     Write-Log "Scanning subscription: $($sub.Name)"
-    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
     # Get resource creation events from Activity Log
-    $logs = Get-AzActivityLog -StartTime $startDate -EndTime (Get-Date) `
-        -Status "Succeeded" -MaxRecord 10000 |
-        Where-Object { $_.OperationName.Value -match "/write$" -and $_.Caller -match "@" }
+    $activityLogLimit = 10000
+    $rawLogs = Get-AzActivityLog -StartTime $startDate -EndTime (Get-Date) `
+        -Status "Succeeded" -MaxRecord $activityLogLimit
+
+    if ($rawLogs.Count -ge $activityLogLimit) {
+        Write-Log "WARNING: Activity log hit $activityLogLimit record limit for $($sub.Name) — orphan detection may be incomplete" -Level "WARN"
+    }
+
+    $logs = $rawLogs | Where-Object { $_.OperationName.Value -match "/write$" -and $_.Caller -match "@" }
 
     # Group by resource to find the creator
     $resourceCreators = @{}

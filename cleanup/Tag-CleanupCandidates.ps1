@@ -30,9 +30,11 @@ param(
     [string]$ResourceId,
 
     [Parameter()]
+    [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string]$InputCsv,
 
     [Parameter()]
+    [ValidateRange(1, 365)]
     [int]$GracePeriodDays = 30
 )
 
