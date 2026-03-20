@@ -215,14 +215,14 @@ if (-not $SkipActivityLog) {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
         try {
-            # Server-side filter: only Succeeded status reduces result set significantly
             $logs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
-                -Status "Succeeded" -MaxRecord $limit -WarningAction SilentlyContinue
+                -MaxRecord $limit -WarningAction SilentlyContinue
 
-            # Client-side filter: only write ops by humans (not system/SP noise)
+            # Client-side filter: write/delete ops with a resource ID
             $filtered = @($logs | Where-Object {
-                $_.OperationName.Value -match "/write$|/delete$|/action$" -and
-                $_.Caller -match "@"
+                $null -ne $_.ResourceId -and
+                $_.OperationName.Value -match "/write$|/delete$" -and
+                $_.Status.Value -eq "Succeeded"
             })
 
             $sw.Stop()
@@ -518,10 +518,11 @@ if (-not $SkipEntraId) {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 $rawLogs = Get-AzActivityLog -StartTime $using:orphanStart -EndTime (Get-Date) `
-                    -Status "Succeeded" -MaxRecord 5000 -WarningAction SilentlyContinue
+                    -MaxRecord 5000 -WarningAction SilentlyContinue
 
                 $createLogs = @($rawLogs | Where-Object {
                     $_.OperationName.Value -match "resourcegroups/write$" -and
+                    $_.Status.Value -eq "Succeeded" -and
                     $_.Caller -match "@"
                 })
                 $sw.Stop()
