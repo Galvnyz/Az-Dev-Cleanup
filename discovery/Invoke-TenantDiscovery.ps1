@@ -185,6 +185,8 @@ foreach ($queryFile in $queryFiles) {
 $summary.QueryResultCounts = $queryResults
 
 # ── Shared: Capture Az profile for parallel runspaces ─────────────────────────
+# Disable context autosave to prevent token cache contention across parallel runspaces
+Disable-AzContextAutosave -Scope Process -ErrorAction SilentlyContinue | Out-Null
 $azProfile = [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile
 
 # ── Phase 2: Activity Log Analysis (parallel with date windowing) ─────────────
@@ -229,6 +231,7 @@ if (-not $SkipActivityLog) {
     $activityResults = $jobs | ForEach-Object -Parallel {
         $job = $_
         Import-Module Az.Accounts, Az.Monitor -ErrorAction Stop
+        Disable-AzContextAutosave -Scope Process -ErrorAction SilentlyContinue | Out-Null
         [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
         Set-AzContext -SubscriptionId $job.SubId -ErrorAction Stop | Out-Null
 
@@ -351,6 +354,7 @@ if (-not $SkipCostData) {
     $costResults = $subscriptions | ForEach-Object -Parallel {
         $sub = $_
         Import-Module Az.Accounts, Az.Billing -ErrorAction Stop
+        Disable-AzContextAutosave -Scope Process -ErrorAction SilentlyContinue | Out-Null
         [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
         Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
