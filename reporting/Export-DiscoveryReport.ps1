@@ -232,6 +232,236 @@ foreach ($entry in $worksheetMap.GetEnumerator()) {
     Write-Output "[INFO] $sheetName`: $($data.Count) rows"
 }
 
+# ── Cross-Reference & Findings ────────────────────────────────────────────────
+
+# Build RG-level cross-reference: cost + resources + activity + dormancy
+$inventoryCsv = Join-Path $ReportDir "queries/01-full-resource-inventory.csv"
+$activityCsv = Join-Path $ReportDir "resource-group-activity.csv"
+$costRGCsv = Join-Path $ReportDir "cost-by-resource-group.csv"
+$lastTouchCsv = Join-Path $ReportDir "resource-last-touch.csv"
+$stoppedVmsCsv = Join-Path $ReportDir "queries/04-stopped-deallocated-vms.csv"
+$emptyRGsCsv = Join-Path $ReportDir "queries/03-empty-resource-groups.csv"
+$emptyPlansCsv = Join-Path $ReportDir "queries/12-empty-app-service-plans.csv"
+$orphanedNicsCsv = Join-Path $ReportDir "queries/13-orphaned-nics.csv"
+$unusedNsgsCsv = Join-Path $ReportDir "queries/07-unused-nsgs.csv"
+$emptyLBsCsv = Join-Path $ReportDir "queries/18-empty-load-balancers.csv"
+$sqlDbsCsv = Join-Path $ReportDir "queries/20-sql-database-inventory.csv"
+
+# Load available data
+$inventory = if (Test-Path $inventoryCsv) { Import-Csv $inventoryCsv } else { @() }
+$activity = if (Test-Path $activityCsv) { Import-Csv $activityCsv } else { @() }
+$costRG = if (Test-Path $costRGCsv) { Import-Csv $costRGCsv } else { @() }
+$lastTouch = if (Test-Path $lastTouchCsv) { Import-Csv $lastTouchCsv } else { @() }
+
+if ($inventory.Count -gt 0) {
+
+    # ── RG Scorecard: join cost + resource count + activity ──
+    $activityByRG = @{}
+    foreach ($a in $activity) { $activityByRG[$a.ResourceGroup.ToLower()] = $a }
+
+    $costByRGMap = @{}
+    foreach ($c in $costRG) { $costByRGMap[$c.ResourceGroup.ToLower()] = $c }
+
+    # Count dormant resources per RG from last-touch data
+    $dormantByRG = @{}
+    $totalByRG = @{}
+    foreach ($t in $lastTouch) {
+        $rg = $t.ResourceGroup.ToLower()
+        if (-not $totalByRG.ContainsKey($rg)) { $totalByRG[$rg] = 0; $dormantByRG[$rg] = 0 }
+        $totalByRG[$rg]++
+        if ([int]$t.DaysSinceTouch -gt 60) { $dormantByRG[$rg]++ }
+    }
+
+    $rgScorecard = $inventory |
+        Group-Object resourceGroup |
+        ForEach-Object {
+            $rgName = $_.Name
+            $rgLower = $rgName.ToLower()
+            $resourceCount = $_.Count
+            $types = ($_.Group | Select-Object -ExpandProperty type -Unique).Count
+
+            $act = $activityByRG[$rgLower]
+            $cost = $costByRGMap[$rgLower]
+
+            $monthlyCost = if ($cost) { [math]::Round([decimal]$cost.TotalCost, 2) } else { 0 }
+            $lastActivityDays = if ($act) { [int]$act.DaysSinceActive } else { $null }
+            $lastCaller = if ($act) { $act.LastCaller } else { "" }
+            $dormant = if ($dormantByRG.ContainsKey($rgLower)) { $dormantByRG[$rgLower] } else { 0 }
+            $touched = if ($totalByRG.ContainsKey($rgLower)) { $totalByRG[$rgLower] } else { 0 }
+            $dormantPct = if ($touched -gt 0) { [math]::Round(($dormant / $touched) * 100) } else { $null }
+
+            [PSCustomObject]@{
+                ResourceGroup       = $rgName
+                Resources           = $resourceCount
+                ResourceTypes       = $types
+                MonthlyCost         = $monthlyCost
+                DaysSinceActivity   = $lastActivityDays
+                LastCaller          = $lastCaller
+                DormantResources    = $dormant
+                TouchedResources    = $touched
+                DormantPct          = $dormantPct
+            }
+        } |
+        Sort-Object MonthlyCost -Descending
+
+    $rgScorecard | Export-Excel -Path $OutputPath -WorksheetName "RG Scorecard" `
+        -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
+    $sheetsCreated++
+    Write-Output "[INFO] RG Scorecard: $($rgScorecard.Count) resource groups cross-referenced"
+
+    # ── Findings Sheet ──
+    $findings = @()
+
+    # Stopped VMs
+    $stoppedVms = if (Test-Path $stoppedVmsCsv) { Import-Csv $stoppedVmsCsv } else { @() }
+    if ($stoppedVms.Count -gt 0) {
+        foreach ($vm in $stoppedVms) {
+            $rgCost = $costByRGMap[$vm.resourceGroup.ToLower()]
+            $rgMonthlyCost = if ($rgCost) { [math]::Round([decimal]$rgCost.TotalCost, 2) } else { 0 }
+            $findings += [PSCustomObject]@{
+                Priority      = "HIGH"
+                Category      = "Stopped VM"
+                ResourceGroup = $vm.resourceGroup
+                Resource      = $vm.name
+                Detail        = "$($vm.vmSize), deallocated $($vm.age_days) days"
+                RGMonthlyCost = $rgMonthlyCost
+                Owner         = if ($vm.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+                Action        = "Delete or snapshot+delete (disks still billing)"
+            }
+        }
+    }
+
+    # Empty RGs
+    $emptyRGs = if (Test-Path $emptyRGsCsv) { Import-Csv $emptyRGsCsv } else { @() }
+    foreach ($rg in $emptyRGs) {
+        $findings += [PSCustomObject]@{
+            Priority      = "LOW"
+            Category      = "Empty RG"
+            ResourceGroup = $rg.name
+            Resource      = ""
+            Detail        = "Zero resources"
+            RGMonthlyCost = 0
+            Owner         = if ($rg.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+            Action        = "Delete via Remove-EmptyResourceGroups.ps1"
+        }
+    }
+
+    # SQL databases — paused or sample
+    $sqlDbs = if (Test-Path $sqlDbsCsv) { Import-Csv $sqlDbsCsv } else { @() }
+    foreach ($db in $sqlDbs) {
+        if ($db.status -eq "Paused" -or $db.name -match "AdventureWorks|sample|test") {
+            $rgCost = $costByRGMap[$db.resourceGroup.ToLower()]
+            $rgMonthlyCost = if ($rgCost) { [math]::Round([decimal]$rgCost.TotalCost, 2) } else { 0 }
+            $findings += [PSCustomObject]@{
+                Priority      = "HIGH"
+                Category      = "Idle SQL DB"
+                ResourceGroup = $db.resourceGroup
+                Resource      = $db.name
+                Detail        = "$($db.skuTier)/$($db.skuName), $($db.status), $($db.age_days) days old"
+                RGMonthlyCost = $rgMonthlyCost
+                Owner         = if ($db.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+                Action        = if ($db.status -eq "Paused") { "Delete (still billing min vCores)" } else { "Delete sample/test database" }
+            }
+        }
+    }
+
+    # Empty App Service Plans
+    $emptyPlans = if (Test-Path $emptyPlansCsv) { Import-Csv $emptyPlansCsv } else { @() }
+    foreach ($plan in $emptyPlans) {
+        $tier = if ($plan.skuTier) { $plan.skuTier } else { "Unknown" }
+        $priority = if ($tier -in @("Free","Dynamic","Shared")) { "LOW" } else { "HIGH" }
+        $findings += [PSCustomObject]@{
+            Priority      = $priority
+            Category      = "Empty App Plan"
+            ResourceGroup = $plan.resourceGroup
+            Resource      = $plan.name
+            Detail        = "$tier / $($plan.skuName), 0 apps deployed"
+            RGMonthlyCost = 0
+            Owner         = if ($plan.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+            Action        = if ($priority -eq "HIGH") { "Delete (paid plan with no apps)" } else { "Delete (free tier, cleanup only)" }
+        }
+    }
+
+    # Orphaned NICs
+    $orphanedNics = if (Test-Path $orphanedNicsCsv) { Import-Csv $orphanedNicsCsv } else { @() }
+    if ($orphanedNics.Count -gt 0) {
+        $findings += [PSCustomObject]@{
+            Priority      = "LOW"
+            Category      = "Orphaned NICs"
+            ResourceGroup = "(multiple)"
+            Resource      = "$($orphanedNics.Count) NICs"
+            Detail        = "Not attached to any VM"
+            RGMonthlyCost = 0
+            Owner         = ""
+            Action        = "Review — may be PE-managed"
+        }
+    }
+
+    # Unused NSGs
+    $unusedNsgs = if (Test-Path $unusedNsgsCsv) { Import-Csv $unusedNsgsCsv } else { @() }
+    if ($unusedNsgs.Count -gt 0) {
+        foreach ($nsg in $unusedNsgs) {
+            $findings += [PSCustomObject]@{
+                Priority      = "LOW"
+                Category      = "Unused NSG"
+                ResourceGroup = $nsg.resourceGroup
+                Resource      = $nsg.name
+                Detail        = "$($nsg.ruleCount) rules, no associations"
+                RGMonthlyCost = 0
+                Owner         = if ($nsg.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+                Action        = "Delete"
+            }
+        }
+    }
+
+    # Empty Load Balancers
+    $emptyLBs = if (Test-Path $emptyLBsCsv) { Import-Csv $emptyLBsCsv } else { @() }
+    foreach ($lb in $emptyLBs) {
+        $priority = if ($lb.skuName -eq "Standard") { "MEDIUM" } else { "LOW" }
+        $findings += [PSCustomObject]@{
+            Priority      = $priority
+            Category      = "Empty Load Balancer"
+            ResourceGroup = $lb.resourceGroup
+            Resource      = $lb.name
+            Detail        = "$($lb.skuName) SKU, no backends"
+            RGMonthlyCost = 0
+            Owner         = if ($lb.tags -match 'Owner=([^;}"]+)') { $Matches[1] } else { "" }
+            Action        = if ($priority -eq "MEDIUM") { "Delete (Standard SKU = ~`$18/mo)" } else { "Delete (Basic SKU, free)" }
+        }
+    }
+
+    # Dormant RGs with high cost
+    foreach ($rg in $rgScorecard) {
+        if ($null -ne $rg.DaysSinceActivity -and $rg.DaysSinceActivity -gt 60 -and $rg.MonthlyCost -gt 50) {
+            $findings += [PSCustomObject]@{
+                Priority      = "HIGH"
+                Category      = "Dormant + Costly RG"
+                ResourceGroup = $rg.ResourceGroup
+                Resource      = "$($rg.Resources) resources"
+                Detail        = "No activity in $($rg.DaysSinceActivity) days, `$$($rg.MonthlyCost)/mo"
+                RGMonthlyCost = $rg.MonthlyCost
+                Owner         = $rg.LastCaller
+                Action        = "Review with owner — likely abandoned"
+            }
+        }
+    }
+
+    # Sort findings: HIGH first, then by cost
+    $priorityOrder = @{ "HIGH" = 1; "MEDIUM" = 2; "LOW" = 3 }
+    $findings = $findings | Sort-Object { $priorityOrder[$_.Priority] }, { -$_.RGMonthlyCost }
+
+    if ($findings.Count -gt 0) {
+        $findings | Export-Excel -Path $OutputPath -WorksheetName "Findings" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -MoveToStart
+        $sheetsCreated++
+        $highCount = ($findings | Where-Object { $_.Priority -eq "HIGH" }).Count
+        $medCount = ($findings | Where-Object { $_.Priority -eq "MEDIUM" }).Count
+        $lowCount = ($findings | Where-Object { $_.Priority -eq "LOW" }).Count
+        Write-Output "[INFO] Findings: $($findings.Count) items ($highCount high, $medCount medium, $lowCount low)"
+    }
+}
+
 # ── Cost Analysis sheets (from external CSV) ──────────────────────────────────
 
 if ($CostCsv) {
