@@ -218,10 +218,10 @@ if (-not $SkipActivityLog) {
             $logs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
                 -MaxRecord $limit -WarningAction SilentlyContinue
 
-            # Client-side filter: write/delete ops with a resource ID
+            # Client-side filter: write/delete/action ops with a resource ID
             $filtered = @($logs | Where-Object {
                 $null -ne $_.ResourceId -and
-                $_.OperationName.Value -match "/write$|/delete$" -and
+                $_.OperationName.Value -match "/write$|/delete$|/action$" -and
                 $_.Status.Value -eq "Succeeded"
             })
 
