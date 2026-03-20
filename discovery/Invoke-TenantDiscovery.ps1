@@ -195,6 +195,7 @@ if (-not $SkipActivityLog) {
     Write-Log "--- Phase 2: Activity Log Analysis ---"
 
     $activityLogLimit = 5000
+    $activityChunkDays = 7      # Time window per query chunk when paginating
     $rgActivity = @{}
     $activityStart = (Get-Date).AddDays(-$LookbackDays)
 
@@ -202,7 +203,7 @@ if (-not $SkipActivityLog) {
 
     $phase2Timer = [System.Diagnostics.Stopwatch]::StartNew()
 
-    # One query per subscription — server-side filtered to Succeeded write ops
+    # One query per subscription — auto-chunks into smaller windows if the 5000 limit is hit
     $activityResults = $subscriptions | ForEach-Object -Parallel {
         $sub = $_
         Import-Module Az.Accounts, Az.Monitor -ErrorAction Stop
@@ -211,12 +212,46 @@ if (-not $SkipActivityLog) {
         Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
         $limit = $using:activityLogLimit
+        $chunkDays = $using:activityChunkDays
         $start = $using:activityStart
+        $end = Get-Date
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
         try {
-            $logs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
+            # First attempt: single query for the entire window
+            $logs = Get-AzActivityLog -StartTime $start -EndTime $end `
                 -MaxRecord $limit -WarningAction SilentlyContinue
+
+            $hitLimit = ($null -ne $logs -and $logs.Count -ge $limit)
+
+            if ($hitLimit) {
+                # Re-query in time-chunked windows to get complete data
+                $allLogs = [System.Collections.Generic.List[object]]::new()
+                $chunkEnd = $end
+                $chunksUsed = 0
+
+                while ($chunkEnd -gt $start) {
+                    $chunkStart = $chunkEnd.AddDays(-$chunkDays)
+                    if ($chunkStart -lt $start) { $chunkStart = $start }
+
+                    $chunkLogs = Get-AzActivityLog -StartTime $chunkStart -EndTime $chunkEnd `
+                        -MaxRecord $limit -WarningAction SilentlyContinue
+                    $chunksUsed++
+
+                    if ($null -ne $chunkLogs) {
+                        foreach ($l in $chunkLogs) { $allLogs.Add($l) }
+
+                        # If this chunk also hit the limit, halve the window for remaining queries
+                        if ($chunkLogs.Count -ge $limit -and $chunkDays -gt 1) {
+                            $chunkDays = [math]::Max(1, [math]::Floor($chunkDays / 2))
+                        }
+                    }
+
+                    $chunkEnd = $chunkStart
+                }
+
+                $logs = $allLogs
+            }
 
             # Filter to records with a ResourceId — these represent actual resource operations
             # We accept all operation types since OperationName/Status property paths
@@ -229,10 +264,11 @@ if (-not $SkipActivityLog) {
                 SubId    = $sub.Id
                 SubName  = $sub.Name
                 Logs     = $filtered
-                RawCount = if ($null -ne $logs) { $logs.Count } else { 0 }
+                RawCount = if ($null -ne $logs) { @($logs).Count } else { 0 }
                 Count    = $filtered.Count
                 Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-                HitLimit = ($null -ne $logs -and $logs.Count -ge $limit)
+                HitLimit = $hitLimit
+                Chunked  = $hitLimit
                 Error    = $null
             }
         } catch {
@@ -245,6 +281,7 @@ if (-not $SkipActivityLog) {
                 Count    = 0
                 Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
                 HitLimit = $false
+                Chunked  = $false
                 Error    = $_.ToString()
             }
         }
@@ -259,7 +296,7 @@ if (-not $SkipActivityLog) {
         }
 
         $statusMsg = "$($r.SubName): $($r.Count) resource operations (from $($r.RawCount) raw) in $($r.Elapsed)s"
-        if ($r.HitLimit) { $statusMsg += " [!] hit $activityLogLimit limit" }
+        if ($r.Chunked) { $statusMsg += " (chunked)" }
         Write-Log "  $statusMsg"
         $totalRecords += $r.Count
 
