@@ -326,7 +326,9 @@ if (-not $SkipEntraId) {
         }
 
         $orphanedRGs = @()
-        $activityStart = (Get-Date).AddDays(-365)
+        # Activity Log API supports max 90 days — use LookbackDays (capped at 90)
+        $orphanLookback = [math]::Min($LookbackDays, 90)
+        $activityStart = (Get-Date).AddDays(-$orphanLookback)
 
         foreach ($sub in $subscriptions) {
             Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
@@ -422,7 +424,7 @@ foreach ($key in $queryResults.Keys | Sort-Object) {
     $reportLines += "| $key | $($queryResults[$key]) |"
 }
 
-if ($summary.ContainsKey("DormantResourceGroups")) {
+if ($summary.Contains("DormantResourceGroups")) {
     $reportLines += @(
         ""
         "## Activity Analysis"
@@ -430,7 +432,7 @@ if ($summary.ContainsKey("DormantResourceGroups")) {
     )
 }
 
-if ($summary.ContainsKey("TotalCostLast30Days")) {
+if ($summary.Contains("TotalCostLast30Days")) {
     $reportLines += @(
         ""
         "## Cost Analysis (last $CostLookbackDays days)"
@@ -440,7 +442,7 @@ if ($summary.ContainsKey("TotalCostLast30Days")) {
     )
 }
 
-if ($summary.ContainsKey("OrphanedResourceGroups")) {
+if ($summary.Contains("OrphanedResourceGroups")) {
     $reportLines += @(
         ""
         "## Orphan Detection"
