@@ -184,54 +184,96 @@ foreach ($queryFile in $queryFiles) {
 
 $summary.QueryResultCounts = $queryResults
 
-# ── Phase 2: Activity Log Analysis ──────────────────────────────────────────
+# ── Shared: Capture Az profile for parallel runspaces ─────────────────────────
+$azProfile = [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile
+
+# ── Phase 2: Activity Log Analysis (parallel) ────────────────────────────────
 
 if (-not $SkipActivityLog) {
     Write-Log "--- Phase 2: Activity Log Analysis ---"
+    Write-Log "  Querying $($subscriptions.Count) subscription(s) in parallel..."
 
     $activityStart = (Get-Date).AddDays(-$LookbackDays)
+    $activityLogLimit = 5000
     $rgActivity = @{}
 
-    foreach ($sub in $subscriptions) {
-        Write-Log "  Scanning activity logs: $($sub.Name)"
+    $phase2Timer = [System.Diagnostics.Stopwatch]::StartNew()
+
+    $activityResults = $subscriptions | ForEach-Object -Parallel {
+        $sub = $_
+        Import-Module Az.Accounts, Az.Monitor -ErrorAction Stop
+        [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
         Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
+        $limit = $using:activityLogLimit
+        $start = $using:activityStart
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
         try {
-            $activityLogLimit = 5000
-            $logs = Get-AzActivityLog -StartTime $activityStart -EndTime (Get-Date) `
-                -MaxRecord $activityLogLimit -WarningAction SilentlyContinue
+            $logs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
+                -MaxRecord $limit -WarningAction SilentlyContinue
+            $sw.Stop()
 
-            if ($logs.Count -ge $activityLogLimit) {
-                Write-Log "  WARNING: Activity log hit $activityLogLimit record limit for $($sub.Name) — results may be truncated. Consider reducing LookbackDays." -Level "WARN"
+            [PSCustomObject]@{
+                SubId    = $sub.Id
+                SubName  = $sub.Name
+                Logs     = $logs
+                Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                HitLimit = ($null -ne $logs -and $logs.Count -ge $limit)
+                Error    = $null
             }
+        } catch {
+            $sw.Stop()
+            [PSCustomObject]@{
+                SubId    = $sub.Id
+                SubName  = $sub.Name
+                Logs     = @()
+                Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                HitLimit = $false
+                Error    = $_.ToString()
+            }
+        }
+    } -ThrottleLimit 4
 
-            foreach ($log in $logs) {
-                if ($null -eq $log.ResourceId) { continue }
+    # Process parallel results in main thread
+    foreach ($r in $activityResults) {
+        if ($r.Error) {
+            Write-Log "  $($r.SubName): FAILED after $($r.Elapsed)s — $($r.Error)" -Level "ERROR"
+            continue
+        }
 
-                # Extract resource group from resource ID
-                $parts = $log.ResourceId -split '/'
-                $rgIdx = [array]::IndexOf($parts, 'resourceGroups')
-                if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) {
-                    $rgName = $parts[$rgIdx + 1]
-                    $key = "$($sub.Id)/$rgName"
+        Write-Log "  $($r.SubName): $($r.Logs.Count) records in $($r.Elapsed)s"
 
-                    if (-not $rgActivity.ContainsKey($key) -or $log.EventTimestamp -gt $rgActivity[$key].LastActivity) {
-                        $rgActivity[$key] = [PSCustomObject]@{
-                            SubscriptionId   = $sub.Id
-                            SubscriptionName = $sub.Name
-                            ResourceGroup    = $rgName
-                            LastActivity     = $log.EventTimestamp
-                            LastOperation    = $log.OperationName.Value
-                            LastCaller       = $log.Caller
-                            DaysSinceActive  = [math]::Round(((Get-Date) - $log.EventTimestamp).TotalDays)
-                        }
+        if ($r.HitLimit) {
+            Write-Log "  WARNING: Activity log hit $activityLogLimit record limit for $($r.SubName) — results may be truncated" -Level "WARN"
+        }
+
+        foreach ($log in $r.Logs) {
+            if ($null -eq $log.ResourceId) { continue }
+
+            $parts = $log.ResourceId -split '/'
+            $rgIdx = [array]::IndexOf($parts, 'resourceGroups')
+            if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) {
+                $rgName = $parts[$rgIdx + 1]
+                $key = "$($r.SubId)/$rgName"
+
+                if (-not $rgActivity.ContainsKey($key) -or $log.EventTimestamp -gt $rgActivity[$key].LastActivity) {
+                    $rgActivity[$key] = [PSCustomObject]@{
+                        SubscriptionId   = $r.SubId
+                        SubscriptionName = $r.SubName
+                        ResourceGroup    = $rgName
+                        LastActivity     = $log.EventTimestamp
+                        LastOperation    = $log.OperationName.Value
+                        LastCaller       = $log.Caller
+                        DaysSinceActive  = [math]::Round(((Get-Date) - $log.EventTimestamp).TotalDays)
                     }
                 }
             }
-        } catch {
-            Write-Log "  Activity log failed for $($sub.Name): $_" -Level "ERROR"
         }
     }
+
+    $phase2Timer.Stop()
+    Write-Log "  Phase 2 total: $([math]::Round($phase2Timer.Elapsed.TotalSeconds, 1))s"
 
     if ($rgActivity.Count -gt 0) {
         $activityReport = $rgActivity.Values | Sort-Object DaysSinceActive -Descending
@@ -250,42 +292,74 @@ if (-not $SkipActivityLog) {
 
 if (-not $SkipCostData) {
     Write-Log "--- Phase 3: Cost Analysis ---"
+    Write-Log "  Querying $($subscriptions.Count) subscription(s) in parallel..."
 
     $costStart = (Get-Date).AddDays(-$CostLookbackDays).ToString("yyyy-MM-dd")
     $costEnd = (Get-Date).ToString("yyyy-MM-dd")
     $costByRG = @{}
 
-    foreach ($sub in $subscriptions) {
-        Write-Log "  Pulling cost data: $($sub.Name)"
+    $phase3Timer = [System.Diagnostics.Stopwatch]::StartNew()
+
+    $costResults = $subscriptions | ForEach-Object -Parallel {
+        $sub = $_
+        Import-Module Az.Accounts, Az.Billing -ErrorAction Stop
+        [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
         Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $usage = Get-AzConsumptionUsageDetail -StartDate $costStart -EndDate $costEnd `
-                -ErrorAction Stop
-
-            foreach ($item in $usage) {
-                $rg = if ($item.InstanceId) {
-                    $parts = $item.InstanceId -split '/'
-                    $rgIdx = [array]::IndexOf($parts, 'resourceGroups')
-                    if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) { $parts[$rgIdx + 1] } else { "(unknown)" }
-                } else { "(unknown)" }
-
-                $key = "$($sub.Id)/$rg"
-                if (-not $costByRG.ContainsKey($key)) {
-                    $costByRG[$key] = [PSCustomObject]@{
-                        SubscriptionId   = $sub.Id
-                        SubscriptionName = $sub.Name
-                        ResourceGroup    = $rg
-                        TotalCost        = [decimal]0
-                        Currency         = $item.BillingCurrency
-                    }
-                }
-                $costByRG[$key].TotalCost += [decimal]$item.PretaxCost
+            $usage = Get-AzConsumptionUsageDetail -StartDate $using:costStart -EndDate $using:costEnd -ErrorAction Stop
+            $sw.Stop()
+            [PSCustomObject]@{
+                SubId   = $sub.Id
+                SubName = $sub.Name
+                Usage   = $usage
+                Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                Error   = $null
             }
         } catch {
-            Write-Log "  Cost data failed for $($sub.Name): $_" -Level "ERROR"
+            $sw.Stop()
+            [PSCustomObject]@{
+                SubId   = $sub.Id
+                SubName = $sub.Name
+                Usage   = @()
+                Elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                Error   = $_.ToString()
+            }
+        }
+    } -ThrottleLimit 4
+
+    foreach ($r in $costResults) {
+        if ($r.Error) {
+            Write-Log "  $($r.SubName): FAILED after $($r.Elapsed)s — $($r.Error)" -Level "ERROR"
+            continue
+        }
+
+        Write-Log "  $($r.SubName): $($r.Usage.Count) usage records in $($r.Elapsed)s"
+
+        foreach ($item in $r.Usage) {
+            $rg = if ($item.InstanceId) {
+                $parts = $item.InstanceId -split '/'
+                $rgIdx = [array]::IndexOf($parts, 'resourceGroups')
+                if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) { $parts[$rgIdx + 1] } else { "(unknown)" }
+            } else { "(unknown)" }
+
+            $key = "$($r.SubId)/$rg"
+            if (-not $costByRG.ContainsKey($key)) {
+                $costByRG[$key] = [PSCustomObject]@{
+                    SubscriptionId   = $r.SubId
+                    SubscriptionName = $r.SubName
+                    ResourceGroup    = $rg
+                    TotalCost        = [decimal]0
+                    Currency         = $item.BillingCurrency
+                }
+            }
+            $costByRG[$key].TotalCost += [decimal]$item.PretaxCost
         }
     }
+
+    $phase3Timer.Stop()
+    Write-Log "  Phase 3 total: $([math]::Round($phase3Timer.Elapsed.TotalSeconds, 1))s"
 
     if ($costByRG.Count -gt 0) {
         $costReport = $costByRG.Values | Sort-Object TotalCost -Descending
@@ -299,7 +373,6 @@ if (-not $SkipCostData) {
         Write-Log "  Total cost (last $CostLookbackDays days): $([math]::Round($totalCost, 2))"
         Write-Log "  Resource groups with zero cost: $zeroCostRGs"
 
-        # Top 20 spenders
         $topSpenders = $costReport | Select-Object -First 20
         $topSpenders | Export-Csv -Path "$OutputDir/top-20-cost-resource-groups.csv" -NoTypeInformation
     }
@@ -312,64 +385,112 @@ if (-not $SkipCostData) {
 if (-not $SkipEntraId) {
     Write-Log "--- Phase 4: Entra ID Orphan Detection ---"
 
+    $phase4Timer = [System.Diagnostics.Stopwatch]::StartNew()
+
     try {
+        $userTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $allUsers = Get-AzADUser -First 10000
+        $userTimer.Stop()
+
         $activeUPNs = @{}
         $knownUPNs = @{}
         foreach ($u in $allUsers) {
             $knownUPNs[$u.UserPrincipalName] = $u.AccountEnabled
             if ($u.AccountEnabled) { $activeUPNs[$u.UserPrincipalName] = $true }
         }
-        Write-Log "  Loaded $($allUsers.Count) Entra ID users ($($activeUPNs.Count) active)"
+        Write-Log "  Loaded $($allUsers.Count) Entra ID users ($($activeUPNs.Count) active) in $([math]::Round($userTimer.Elapsed.TotalSeconds, 1))s"
         if ($allUsers.Count -ge 10000) {
             Write-Log "  WARNING: User count hit the 10,000 limit — results may be incomplete. Consider paginating." -Level "WARN"
         }
 
-        $orphanedRGs = @()
         # Activity Log API supports max 90 days — use LookbackDays (capped at 90)
         $orphanLookback = [math]::Min($LookbackDays, 90)
-        $activityStart = (Get-Date).AddDays(-$orphanLookback)
+        $orphanStart = (Get-Date).AddDays(-$orphanLookback)
+        $orphanLogLimit = 5000
 
-        foreach ($sub in $subscriptions) {
+        Write-Log "  Querying activity logs for $($subscriptions.Count) subscription(s) in parallel..."
+
+        # Parallel activity log queries per subscription
+        $orphanLogResults = $subscriptions | ForEach-Object -Parallel {
+            $sub = $_
+            Import-Module Az.Accounts, Az.Monitor -ErrorAction Stop
+            [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile = $using:azProfile
             Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
-            try {
-                $orphanLogLimit = 5000
-                $rawOrphanLogs = Get-AzActivityLog -StartTime $activityStart -EndTime (Get-Date) `
-                    -MaxRecord $orphanLogLimit -WarningAction SilentlyContinue
+            $limit = $using:orphanLogLimit
+            $start = $using:orphanStart
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-                if ($rawOrphanLogs.Count -ge $orphanLogLimit) {
-                    Write-Log "  WARNING: Orphan detection activity log hit $orphanLogLimit record limit for $($sub.Name) — results may be truncated" -Level "WARN"
+            try {
+                $rawLogs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
+                    -MaxRecord $limit -WarningAction SilentlyContinue
+                $sw.Stop()
+
+                # Filter to RG creation events in the parallel block to reduce data transfer
+                $createLogs = $rawLogs | Where-Object {
+                    $_.OperationName.Value -match "resourcegroups/write$" -and
+                    $_.Status.Value -eq "Succeeded" -and
+                    $_.Caller -match "@"
                 }
 
-                $createLogs = $rawOrphanLogs | Where-Object {
-                        $_.OperationName.Value -match "resourcegroups/write$" -and
-                        $_.Status.Value -eq "Succeeded" -and
-                        $_.Caller -match "@"
-                    }
-
-                foreach ($log in $createLogs) {
-                    $creator = $log.Caller
-                    if (-not $activeUPNs.ContainsKey($creator)) {
-                        # Extract RG name from the resourceGroups segment, not the last path element
-                        $idParts = $log.ResourceId -split '/'
-                        $rgIdx = [array]::IndexOf($idParts, 'resourceGroups')
-                        $rgName = if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $idParts.Length) { $idParts[$rgIdx + 1] } else { $idParts[-1] }
-
-                        $orphanedRGs += [PSCustomObject]@{
-                            SubscriptionId   = $sub.Id
-                            SubscriptionName = $sub.Name
-                            ResourceGroup    = $rgName
-                            Creator          = $creator
-                            CreatorStatus    = if ($knownUPNs.ContainsKey($creator)) { "Disabled" } else { "Deleted" }
-                            CreatedDate      = $log.EventTimestamp
-                        }
-                    }
+                [PSCustomObject]@{
+                    SubId      = $sub.Id
+                    SubName    = $sub.Name
+                    CreateLogs = @($createLogs)
+                    RawCount   = $rawLogs.Count
+                    Elapsed    = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                    HitLimit   = ($null -ne $rawLogs -and $rawLogs.Count -ge $limit)
+                    Error      = $null
                 }
             } catch {
-                Write-Log "  Entra ID check failed for $($sub.Name): $_" -Level "ERROR"
+                $sw.Stop()
+                [PSCustomObject]@{
+                    SubId      = $sub.Id
+                    SubName    = $sub.Name
+                    CreateLogs = @()
+                    RawCount   = 0
+                    Elapsed    = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                    HitLimit   = $false
+                    Error      = $_.ToString()
+                }
+            }
+        } -ThrottleLimit 4
+
+        # Process parallel results in main thread
+        $orphanedRGs = @()
+        foreach ($r in $orphanLogResults) {
+            if ($r.Error) {
+                Write-Log "  $($r.SubName): FAILED after $($r.Elapsed)s — $($r.Error)" -Level "ERROR"
+                continue
+            }
+
+            Write-Log "  $($r.SubName): $($r.RawCount) log records ($($r.CreateLogs.Count) RG creates) in $($r.Elapsed)s"
+
+            if ($r.HitLimit) {
+                Write-Log "  WARNING: Orphan detection activity log hit $orphanLogLimit record limit for $($r.SubName) — results may be truncated" -Level "WARN"
+            }
+
+            foreach ($log in $r.CreateLogs) {
+                $creator = $log.Caller
+                if (-not $activeUPNs.ContainsKey($creator)) {
+                    $idParts = $log.ResourceId -split '/'
+                    $rgIdx = [array]::IndexOf($idParts, 'resourceGroups')
+                    $rgName = if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $idParts.Length) { $idParts[$rgIdx + 1] } else { $idParts[-1] }
+
+                    $orphanedRGs += [PSCustomObject]@{
+                        SubscriptionId   = $r.SubId
+                        SubscriptionName = $r.SubName
+                        ResourceGroup    = $rgName
+                        Creator          = $creator
+                        CreatorStatus    = if ($knownUPNs.ContainsKey($creator)) { "Disabled" } else { "Deleted" }
+                        CreatedDate      = $log.EventTimestamp
+                    }
+                }
             }
         }
+
+        $phase4Timer.Stop()
+        Write-Log "  Phase 4 total: $([math]::Round($phase4Timer.Elapsed.TotalSeconds, 1))s"
 
         if ($orphanedRGs.Count -gt 0) {
             $orphanedRGs | Export-Csv -Path "$OutputDir/orphaned-resource-groups.csv" -NoTypeInformation
