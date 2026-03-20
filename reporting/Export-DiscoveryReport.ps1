@@ -296,8 +296,7 @@ if ($CostCsv) {
             Sort-Object AnnualCost -Descending
 
         $costByRG | Export-Excel -Path $OutputPath -WorksheetName "Cost by RG" `
-            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-            -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
         $sheetsCreated++
         Write-Output "[INFO] Cost by RG: $($costByRG.Count) resource groups"
 
@@ -318,8 +317,7 @@ if ($CostCsv) {
             Sort-Object AnnualCost -Descending
 
         $costByService | Export-Excel -Path $OutputPath -WorksheetName "Cost by Service" `
-            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-            -NumberFormat @{ AnnualCost = '$#,##0.00'; PctOfTotal = '0.0"%"' }
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
         $sheetsCreated++
         Write-Output "[INFO] Cost by Service: $($costByService.Count) services"
 
@@ -345,8 +343,7 @@ if ($CostCsv) {
             Select-Object -First 50
 
         $costByResource | Export-Excel -Path $OutputPath -WorksheetName "Top 50 Resources" `
-            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-            -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
         $sheetsCreated++
         Write-Output "[INFO] Top 50 Resources: by annual cost"
 
@@ -369,8 +366,7 @@ if ($CostCsv) {
             Sort-Object AnnualCost -Descending
 
         $costByType | Export-Excel -Path $OutputPath -WorksheetName "Cost by Type" `
-            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-            -NumberFormat @{ AnnualCost = '$#,##0.00'; AvgCostPerResource = '$#,##0.00'; PctOfTotal = '0.0"%"' }
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
         $sheetsCreated++
         Write-Output "[INFO] Cost by Type: $($costByType.Count) resource types"
 
@@ -380,8 +376,7 @@ if ($CostCsv) {
 
         if ($lowCostRGs.Count -gt 0) {
             $lowCostRGs | Export-Excel -Path $OutputPath -WorksheetName "Low Cost RGs (<10 yr)" `
-                -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-                -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+                -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
             $sheetsCreated++
             Write-Output "[INFO] Low Cost RGs: $($lowCostRGs.Count) RGs under `$10/year"
         }
