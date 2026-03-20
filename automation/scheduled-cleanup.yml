@@ -35,8 +35,29 @@ env:
   DISCOVERY_PATH: ./discovery
 
 jobs:
+  preflight:
+    name: Pre-flight Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run Pre-flight Validation
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            & "./automation/Test-Prerequisites.ps1"
+
   discovery:
     name: Resource Discovery
+    needs: preflight
     runs-on: ubuntu-latest
     if: github.event.schedule == '0 6 * * 1' || github.event.inputs.action == 'discovery-only'
     steps:
@@ -66,6 +87,7 @@ jobs:
 
   cleanup-dry-run:
     name: Cleanup Dry Run
+    needs: preflight
     runs-on: ubuntu-latest
     if: github.event.inputs.action == 'cleanup-dry-run'
     steps:
@@ -83,7 +105,7 @@ jobs:
         with:
           azPSVersion: latest
           inlineScript: |
-            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1" -DryRun
+            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1" -WhatIf
 
       - name: Dry Run - Empty Resource Groups
         uses: azure/powershell@v2
@@ -94,6 +116,7 @@ jobs:
 
   cleanup-execute:
     name: Cleanup Execute
+    needs: preflight
     runs-on: ubuntu-latest
     if: github.event.inputs.action == 'cleanup-execute'
     environment: production  # Requires manual approval
