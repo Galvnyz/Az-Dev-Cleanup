@@ -1,35 +1,46 @@
 // Resource Change Analysis
-// Uses the resourcechanges table to show who last modified each resource,
-// how many changes occurred in the last 90 days, and how long since the last change.
-// Resources with zero changes are strong staleness candidates.
+// Combines resource-level timestamps (systemData, provider-specific properties)
+// with the resourcechanges table (when available) to determine last modification.
+//
+// NOTE: The resourcechanges table requires Microsoft.ChangeAnalysis provider
+// to be registered. If not registered, this query still works but only shows
+// resource-level timestamps without change history detail.
+//
+// To enable: Register-AzResourceProvider -ProviderNamespace Microsoft.ChangeAnalysis
 
 resources
-| project resourceId = id, subscriptionId, resourceGroup, name, type, location, tags
-| join kind=leftouter (
-    resourcechanges
-    | where properties.changeAttributes.timestamp > ago(90d)
-    | extend
-        changeTimestamp = todatetime(properties.changeAttributes.timestamp),
-        changedBy = tostring(properties.changeAttributes.changedBy),
-        changedByType = tostring(properties.changeAttributes.changedByType),
-        changeType = tostring(properties.changeType),
-        targetResourceId = tostring(properties.targetResourceId)
-    | summarize
-        lastChangeTime = max(changeTimestamp),
-        lastChangedBy = arg_max(changeTimestamp, changedBy).changedBy,
-        lastChangedByType = arg_max(changeTimestamp, changedByType).changedByType,
-        lastChangeType = arg_max(changeTimestamp, changeType).changeType,
-        changeCount = count()
-        by targetResourceId
-) on $left.resourceId == $right.targetResourceId
-| extend
-    daysSinceLastChange = iff(isnull(lastChangeTime), 999, datetime_diff('day', now(), lastChangeTime)),
-    changeCount = iff(isnull(changeCount), 0, changeCount),
-    lastChangedBy = iff(isempty(lastChangedBy), "no changes in 90d", lastChangedBy),
-    lastChangedByType = iff(isempty(lastChangedByType), "none", lastChangedByType)
+| extend createdTime = coalesce(
+    todatetime(properties.creationTime),
+    todatetime(properties.timeCreated),
+    todatetime(properties.creationDate),
+    todatetime(properties.created),
+    todatetime(properties.createdAt),
+    todatetime(properties.systemData.createdAt)
+  )
+| extend lastModified = coalesce(
+    todatetime(properties.changedTime),
+    todatetime(properties.lastModifiedTime),
+    todatetime(properties.lastModified),
+    todatetime(properties.lastUpdated),
+    todatetime(properties.systemData.lastModifiedAt)
+  )
+| extend lastModifiedBy = coalesce(
+    tostring(properties.systemData.lastModifiedBy),
+    tostring(properties.lastModifiedBy)
+  )
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend daysSinceModified = datetime_diff('day', now(), lastModified)
 | project
-    subscriptionId, resourceGroup, name, type, location,
-    lastChangeTime, daysSinceLastChange,
-    lastChangedBy, lastChangedByType, lastChangeType,
-    changeCount, tags
-| order by daysSinceLastChange desc
+    subscriptionId,
+    resourceGroup,
+    name,
+    type,
+    location,
+    createdTime,
+    age_days,
+    lastModified,
+    daysSinceModified,
+    lastModifiedBy,
+    hasTimestamps = isnotnull(createdTime) or isnotnull(lastModified),
+    tags
+| order by daysSinceModified desc, age_days desc

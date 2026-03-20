@@ -1,12 +1,31 @@
 // Full Resource Inventory
 // Returns every resource across all subscriptions with key metadata.
-// Includes both creation and last-modified timestamps for staleness analysis.
+// Tries multiple property name variants for creation/modification timestamps
+// since different Azure resource providers use different property names.
 
 resources
-| extend createdTime = todatetime(properties.creationTime)
+| extend createdTime = coalesce(
+    todatetime(properties.creationTime),
+    todatetime(properties.timeCreated),
+    todatetime(properties.creationDate),
+    todatetime(properties.created),
+    todatetime(properties.createdAt),
+    todatetime(properties.provisioningTimestamp),
+    todatetime(properties.systemData.createdAt)
+  )
 | extend age_days = datetime_diff('day', now(), createdTime)
-| extend lastModified = todatetime(properties.changedTime)
+| extend lastModified = coalesce(
+    todatetime(properties.changedTime),
+    todatetime(properties.lastModifiedTime),
+    todatetime(properties.lastModified),
+    todatetime(properties.lastUpdated),
+    todatetime(properties.systemData.lastModifiedAt)
+  )
 | extend daysSinceModified = datetime_diff('day', now(), lastModified)
+| extend lastModifiedBy = coalesce(
+    tostring(properties.systemData.lastModifiedBy),
+    tostring(properties.lastModifiedBy)
+  )
 | project
     subscriptionId,
     resourceGroup,
@@ -20,5 +39,6 @@ resources
     age_days,
     lastModified,
     daysSinceModified,
+    lastModifiedBy,
     provisioningState = tostring(properties.provisioningState)
-| order by daysSinceModified desc
+| order by age_days desc
