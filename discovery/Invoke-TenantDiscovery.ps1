@@ -677,6 +677,27 @@ $reportLines += @(
 $reportContent = $reportLines -join "`n"
 $reportContent | Out-File -FilePath "$OutputDir/REPORT.md"
 
+# ── Generate XLSX Report (if ImportExcel available) ───────────────────────────
+
+$exportScript = Join-Path $PSScriptRoot "../reporting/Export-DiscoveryReport.ps1"
+if (-not (Test-Path $exportScript)) {
+    $exportScript = "./reporting/Export-DiscoveryReport.ps1"
+}
+
+if ((Get-Module ImportExcel -ListAvailable) -and (Test-Path $exportScript)) {
+    Write-Log "--- Generating Excel Report ---"
+    try {
+        & $exportScript -ReportDir $OutputDir
+        Write-Log "Excel report: $OutputDir/discovery-report.xlsx"
+    } catch {
+        Write-Log "Excel report generation failed: $_" -Level "WARN"
+    }
+} else {
+    if (-not (Get-Module ImportExcel -ListAvailable)) {
+        Write-Log "Skipping Excel report — ImportExcel module not installed (Install-Module ImportExcel)" -Level "SKIP"
+    }
+}
+
 Write-Log "=== Discovery Complete ==="
 Write-Log "Report: $OutputDir/REPORT.md"
 Write-Log "Summary: $OutputDir/summary.json"
