@@ -13,15 +13,12 @@
     - Supports -WhatIf for dry runs
     - Skips resources with active resource locks
 
-.PARAMETER DryRun
-    Report what would be deleted without actually deleting.
-
 .PARAMETER OutputPath
     Path to write the action log CSV. Default: ./cleanup-log-{date}.csv
 
 .EXAMPLE
     # See what would be cleaned up
-    .\Remove-ExpiredResources.ps1 -DryRun
+    .\Remove-ExpiredResources.ps1 -WhatIf
 
     # Run for real
     .\Remove-ExpiredResources.ps1
@@ -29,9 +26,6 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter()]
-    [switch]$DryRun,
-
     [Parameter()]
     [string]$OutputPath = "./cleanup-log-$(Get-Date -Format 'yyyyMMdd-HHmmss').csv"
 )
@@ -62,7 +56,7 @@ $totalSkipped = 0
 
 foreach ($sub in $subscriptions) {
     Write-Log "Processing subscription: $($sub.Name)"
-    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    Set-AzContext -SubscriptionId $sub.Id -ErrorAction Stop | Out-Null
 
     # Find resources with expired expiry-date tag
     $expiredByTag = Get-AzResource -TagName "expiry-date" | Where-Object {
@@ -115,13 +109,6 @@ foreach ($sub in $subscriptions) {
             continue
         }
 
-        if ($DryRun) {
-            Write-Log "[DRY RUN] Would delete: $($resource.Name) ($($resource.ResourceType))" -Level "DRYRUN"
-            $result.Action = "WouldDelete"
-            $results += $result
-            continue
-        }
-
         if ($PSCmdlet.ShouldProcess($resource.Name, "Delete expired resource")) {
             try {
                 Remove-AzResource -ResourceId $resource.Id -Force -ErrorAction Stop
@@ -133,6 +120,8 @@ foreach ($sub in $subscriptions) {
                 $result.Action = "Failed"
                 $result.Reason = $_.ToString()
             }
+        } else {
+            $result.Action = "WhatIf"
         }
 
         $results += $result
