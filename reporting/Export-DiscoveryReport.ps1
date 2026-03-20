@@ -8,6 +8,7 @@
     - Summary dashboard sheet with key metrics
     - One worksheet per discovery query result
     - Activity, cost, and orphan sheets (when present)
+    - Cost analysis sheets from external cost CSV (when provided)
     - Conditional formatting for age and cost columns
     - Auto-sized columns and Excel table formatting
 
@@ -16,15 +17,20 @@
 .PARAMETER ReportDir
     Path to a discovery report directory (e.g., ./reports/2026-03-19-183339).
 
+.PARAMETER CostCsv
+    Optional. Path to a cost analysis CSV exported from Azure Cost Management.
+    Expected columns: UsageDate, ResourceId, ResourceType, ResourceLocation,
+    ResourceGroupName, ServiceName, Meter, CostUSD
+
 .PARAMETER OutputPath
-    Path for the .xlsx file. Default: {ReportDir}/discovery-report.xlsx
+    Path for the .xlsx file. Default: {ReportDir}/discovery-report-{timestamp}.xlsx
 
 .EXAMPLE
     # Generate XLSX from the latest report
     .\Export-DiscoveryReport.ps1 -ReportDir ./reports/2026-03-19-183339
 
-    # Custom output path
-    .\Export-DiscoveryReport.ps1 -ReportDir ./reports/2026-03-19-183339 -OutputPath ./final-report.xlsx
+    # Include cost data
+    .\Export-DiscoveryReport.ps1 -ReportDir ./reports/2026-03-19-193430 -CostCsv ./reports/cost-analysis.csv
 #>
 
 [CmdletBinding()]
@@ -32,6 +38,10 @@ param(
     [Parameter(Mandatory)]
     [ValidateScript({ Test-Path $_ -PathType Container })]
     [string]$ReportDir,
+
+    [Parameter()]
+    [ValidateScript({ Test-Path $_ -PathType Leaf })]
+    [string]$CostCsv,
 
     [Parameter()]
     [string]$OutputPath
@@ -210,6 +220,178 @@ foreach ($entry in $worksheetMap.GetEnumerator()) {
 
     $sheetsCreated++
     Write-Output "[INFO] $sheetName`: $($data.Count) rows"
+}
+
+# ── Cost Analysis sheets (from external CSV) ──────────────────────────────────
+
+if ($CostCsv) {
+    Write-Output "[INFO] Loading cost data from: $CostCsv"
+    $costData = Import-Csv -Path $CostCsv
+
+    if ($costData.Count -eq 0) {
+        Write-Output "[WARN] Cost CSV is empty — skipping cost analysis sheets"
+    } else {
+        $totalCost = ($costData | Measure-Object -Property CostUSD -Sum).Sum
+        $dates = $costData | ForEach-Object { [datetime]$_.UsageDate } | Sort-Object
+        $dateRange = "$($dates[0].ToString('yyyy-MM-dd')) to $($dates[-1].ToString('yyyy-MM-dd'))"
+
+        Write-Output "[INFO] Cost data: $($costData.Count) records, $dateRange, total `$$([math]::Round($totalCost, 2))"
+
+        # ── Cost Summary (add to Summary sheet) ──
+        # We'll create a separate Cost Overview sheet instead of modifying Summary
+        $costSummaryRows = @(
+            [PSCustomObject]@{ Metric = "Date Range"; Value = $dateRange }
+            [PSCustomObject]@{ Metric = "Total Spend"; Value = "`$$([math]::Round($totalCost, 2))" }
+            [PSCustomObject]@{ Metric = "Monthly Average"; Value = "`$$([math]::Round($totalCost / (($dates[-1] - $dates[0]).Days / 30.44), 2))" }
+            [PSCustomObject]@{ Metric = "Total Records"; Value = $costData.Count }
+            [PSCustomObject]@{ Metric = ""; Value = "" }
+        )
+
+        # Monthly trend rows for the overview
+        $monthlyData = $costData |
+            ForEach-Object { [PSCustomObject]@{ Month = ([datetime]$_.UsageDate).ToString('yyyy-MM'); Cost = [decimal]$_.CostUSD } } |
+            Group-Object Month |
+            ForEach-Object { [PSCustomObject]@{ Month = $_.Name; Spend = [math]::Round(($_.Group | Measure-Object Cost -Sum).Sum, 2) } } |
+            Sort-Object Month
+
+        $costSummaryRows += [PSCustomObject]@{ Metric = "--- Monthly Trend ---"; Value = "" }
+        foreach ($m in $monthlyData) {
+            $costSummaryRows += [PSCustomObject]@{ Metric = $m.Month; Value = $m.Spend }
+        }
+
+        $costSummaryRows | Export-Excel -Path $OutputPath -WorksheetName "Cost Overview" `
+            -AutoSize -BoldTopRow -FreezeTopRow `
+            -Title "Cost Analysis" -TitleBold -TitleSize 14
+        $sheetsCreated++
+        Write-Output "[INFO] Cost Overview: summary + monthly trend"
+
+        # ── Monthly Trend (chart-friendly format) ──
+        $monthlyData | Export-Excel -Path $OutputPath -WorksheetName "Monthly Trend" `
+            -AutoSize -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -ExcelChartDefinition (
+                New-ExcelChartDefinition -ChartType ColumnClustered `
+                    -Title "Monthly Spend (USD)" `
+                    -XRange "Month" -YRange "Spend" `
+                    -Width 800 -Height 400 -Row 0 -Column 3
+            )
+        $sheetsCreated++
+        Write-Output "[INFO] Monthly Trend: $($monthlyData.Count) months with chart"
+
+        # ── Cost by Resource Group ──
+        $costByRG = $costData |
+            Group-Object ResourceGroupName |
+            ForEach-Object {
+                $annualCost = [math]::Round(($_.Group | Measure-Object -Property CostUSD -Sum).Sum, 2)
+                $monthlyCost = [math]::Round($annualCost / (($dates[-1] - $dates[0]).Days / 30.44), 2)
+                $resourceCount = ($_.Group | Select-Object -ExpandProperty ResourceId -Unique).Count
+                $topService = ($_.Group | Group-Object ServiceName | Sort-Object Count -Descending | Select-Object -First 1).Name
+                [PSCustomObject]@{
+                    ResourceGroup   = $_.Name
+                    AnnualCost      = $annualCost
+                    MonthlyCost     = $monthlyCost
+                    ResourceCount   = $resourceCount
+                    TopService      = $topService
+                }
+            } |
+            Sort-Object AnnualCost -Descending
+
+        $costByRG | Export-Excel -Path $OutputPath -WorksheetName "Cost by RG" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+        $sheetsCreated++
+        Write-Output "[INFO] Cost by RG: $($costByRG.Count) resource groups"
+
+        # ── Cost by Service ──
+        $costByService = $costData |
+            Group-Object ServiceName |
+            ForEach-Object {
+                $annualCost = [math]::Round(($_.Group | Measure-Object -Property CostUSD -Sum).Sum, 2)
+                $pctOfTotal = [math]::Round(($annualCost / $totalCost) * 100, 1)
+                $resourceCount = ($_.Group | Select-Object -ExpandProperty ResourceId -Unique).Count
+                [PSCustomObject]@{
+                    Service         = $_.Name
+                    AnnualCost      = $annualCost
+                    PctOfTotal      = $pctOfTotal
+                    ResourceCount   = $resourceCount
+                }
+            } |
+            Sort-Object AnnualCost -Descending
+
+        $costByService | Export-Excel -Path $OutputPath -WorksheetName "Cost by Service" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -NumberFormat @{ AnnualCost = '$#,##0.00'; PctOfTotal = '0.0"%"' }
+        $sheetsCreated++
+        Write-Output "[INFO] Cost by Service: $($costByService.Count) services"
+
+        # ── Top 50 Resources by Cost ──
+        $costByResource = $costData |
+            Group-Object ResourceId |
+            ForEach-Object {
+                $parts = $_.Name -split '/'
+                $rgIdx = [array]::IndexOf($parts, 'resourcegroups')
+                $rg = if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) { $parts[$rgIdx + 1] } else { "" }
+                $annualCost = [math]::Round(($_.Group | Measure-Object -Property CostUSD -Sum).Sum, 2)
+                $monthlyCost = [math]::Round($annualCost / (($dates[-1] - $dates[0]).Days / 30.44), 2)
+                [PSCustomObject]@{
+                    Resource        = $parts[-1]
+                    ResourceGroup   = $rg
+                    ResourceType    = $_.Group[0].ResourceType
+                    Service         = $_.Group[0].ServiceName
+                    AnnualCost      = $annualCost
+                    MonthlyCost     = $monthlyCost
+                }
+            } |
+            Sort-Object AnnualCost -Descending |
+            Select-Object -First 50
+
+        $costByResource | Export-Excel -Path $OutputPath -WorksheetName "Top 50 Resources" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+        $sheetsCreated++
+        Write-Output "[INFO] Top 50 Resources: by annual cost"
+
+        # ── Cost by Resource Type ──
+        $costByType = $costData |
+            Group-Object ResourceType |
+            ForEach-Object {
+                $annualCost = [math]::Round(($_.Group | Measure-Object -Property CostUSD -Sum).Sum, 2)
+                $pctOfTotal = [math]::Round(($annualCost / $totalCost) * 100, 1)
+                $resourceCount = ($_.Group | Select-Object -ExpandProperty ResourceId -Unique).Count
+                $costPerResource = if ($resourceCount -gt 0) { [math]::Round($annualCost / $resourceCount, 2) } else { 0 }
+                [PSCustomObject]@{
+                    ResourceType    = $_.Name
+                    AnnualCost      = $annualCost
+                    PctOfTotal      = $pctOfTotal
+                    ResourceCount   = $resourceCount
+                    AvgCostPerResource = $costPerResource
+                }
+            } |
+            Sort-Object AnnualCost -Descending
+
+        $costByType | Export-Excel -Path $OutputPath -WorksheetName "Cost by Type" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+            -NumberFormat @{ AnnualCost = '$#,##0.00'; AvgCostPerResource = '$#,##0.00'; PctOfTotal = '0.0"%"' }
+        $sheetsCreated++
+        Write-Output "[INFO] Cost by Type: $($costByType.Count) resource types"
+
+        # ── Zero/Low Cost RGs (cleanup candidates) ──
+        $lowCostRGs = $costByRG | Where-Object { $_.AnnualCost -lt 10 } |
+            Sort-Object AnnualCost
+
+        if ($lowCostRGs.Count -gt 0) {
+            $lowCostRGs | Export-Excel -Path $OutputPath -WorksheetName "Low Cost RGs (<10 yr)" `
+                -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
+                -NumberFormat @{ AnnualCost = '$#,##0.00'; MonthlyCost = '$#,##0.00' }
+            $sheetsCreated++
+            Write-Output "[INFO] Low Cost RGs: $($lowCostRGs.Count) RGs under `$10/year"
+        }
+
+        # ── Raw Cost Data ──
+        $costData | Export-Excel -Path $OutputPath -WorksheetName "Raw Cost Data" `
+            -AutoSize -AutoFilter -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
+        $sheetsCreated++
+        Write-Output "[INFO] Raw Cost Data: $($costData.Count) records"
+    }
 }
 
 # ── Final output ──────────────────────────────────────────────────────────────
