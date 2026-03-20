@@ -267,13 +267,7 @@ if ($CostCsv) {
 
         # ── Monthly Trend (chart-friendly format) ──
         $monthlyData | Export-Excel -Path $OutputPath -WorksheetName "Monthly Trend" `
-            -AutoSize -BoldTopRow -FreezeTopRow -TableStyle "Medium2" `
-            -ExcelChartDefinition (
-                New-ExcelChartDefinition -ChartType ColumnClustered `
-                    -Title "Monthly Spend (USD)" `
-                    -XRange "Month" -YRange "Spend" `
-                    -Width 800 -Height 400 -Row 0 -Column 3
-            )
+            -AutoSize -BoldTopRow -FreezeTopRow -TableStyle "Medium2"
         $sheetsCreated++
         Write-Output "[INFO] Monthly Trend: $($monthlyData.Count) months with chart"
 
