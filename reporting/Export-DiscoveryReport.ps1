@@ -75,6 +75,7 @@ $worksheetMap = [ordered]@{
     "queries/08-old-snapshots"           = "Old Snapshots"
     "queries/09-resource-age-summary"    = "Resource Age Summary"
     "queries/10-subscription-overview"   = "Subscription Overview"
+    "queries/11-resource-change-analysis" = "Change Analysis"
     "resource-group-activity"            = "RG Activity"
     "cost-by-resource-group"             = "Cost by RG"
     "top-20-cost-resource-groups"        = "Top 20 Cost RGs"
@@ -176,7 +177,7 @@ foreach ($entry in $worksheetMap.GetEnumerator()) {
     $conditionalFormats = @()
 
     # Age-based highlighting (red for old resources)
-    $ageColumns = @("age_days", "AgeDays", "DaysSinceActive")
+    $ageColumns = @("age_days", "AgeDays", "DaysSinceActive", "daysSinceModified", "daysSinceLastChange")
     foreach ($col in $ageColumns) {
         if ($data[0].PSObject.Properties.Name -contains $col) {
             $colLetter = [char](65 + [array]::IndexOf($data[0].PSObject.Properties.Name, $col))
