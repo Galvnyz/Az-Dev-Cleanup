@@ -335,6 +335,48 @@ if (-not $SkipActivityLog) {
         $summary.DormantResourceGroups = $dormantCount
         Write-Log "  $dormantCount resource groups with no activity in 60+ days"
     }
+
+    # Build per-resource last-touch index from collected activity logs
+    $resourceLastTouch = @{}
+    foreach ($subGroup in $resultsBySub) {
+        foreach ($r in $subGroup.Group) {
+            if ($r.Error) { continue }
+            foreach ($log in $r.Logs) {
+                if ($null -eq $log.ResourceId) { continue }
+                $rid = $log.ResourceId.ToLower()
+                if (-not $resourceLastTouch.ContainsKey($rid) -or $log.EventTimestamp -gt $resourceLastTouch[$rid].Timestamp) {
+                    $resourceLastTouch[$rid] = @{
+                        Timestamp = $log.EventTimestamp
+                        Operation = $log.OperationName.Value
+                        Caller    = $log.Caller
+                    }
+                }
+            }
+        }
+    }
+
+    if ($resourceLastTouch.Count -gt 0) {
+        $touchReport = $resourceLastTouch.GetEnumerator() | ForEach-Object {
+            $parts = $_.Key -split '/'
+            $rgIdx = [array]::IndexOf($parts, 'resourcegroups')
+            $rg = if ($rgIdx -ge 0 -and $rgIdx + 1 -lt $parts.Length) { $parts[$rgIdx + 1] } else { "" }
+            [PSCustomObject]@{
+                ResourceId       = $_.Key
+                ResourceGroup    = $rg
+                ResourceName     = $parts[-1]
+                LastTouchTime    = $_.Value.Timestamp
+                DaysSinceTouch   = [math]::Round(((Get-Date) - $_.Value.Timestamp).TotalDays)
+                LastOperation    = $_.Value.Operation
+                LastCaller       = $_.Value.Caller
+            }
+        } | Sort-Object DaysSinceTouch -Descending
+
+        $touchReport | Export-Csv -Path "$OutputDir/resource-last-touch.csv" -NoTypeInformation
+        $summary.ResourcesWithLastTouch = $touchReport.Count
+        $dormantResources = ($touchReport | Where-Object { $_.DaysSinceTouch -gt 60 }).Count
+        $summary.DormantResources = $dormantResources
+        Write-Log "  Per-resource last-touch: $($touchReport.Count) resources indexed, $dormantResources dormant (60+ days)"
+    }
 } else {
     Write-Log "--- Phase 2: Activity Log Analysis (SKIPPED) ---"
 }

@@ -1,0 +1,26 @@
+// Key Vault Inventory
+// Key Vaults with soft-delete enabled (default since 2021) retain deleted
+// vaults and secrets for up to 90 days, incurring storage costs.
+// Check for vaults with no recent access and expired certificates/secrets.
+
+resources
+| where type =~ "microsoft.keyvault/vaults"
+| extend createdTime = todatetime(properties.createdTime)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend softDeleteEnabled = tobool(properties.enableSoftDelete)
+| extend softDeleteRetentionDays = toint(properties.softDeleteRetentionInDays)
+| extend purgeProtection = tobool(properties.enablePurgeProtection)
+| extend rbacAuth = tobool(properties.enableRbacAuthorization)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    softDeleteEnabled,
+    softDeleteRetentionDays,
+    purgeProtection,
+    rbacAuth,
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc

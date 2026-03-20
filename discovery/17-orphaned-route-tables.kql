@@ -1,0 +1,15 @@
+// Orphaned Route Tables
+// Route tables not associated with any subnet serve no purpose.
+
+resources
+| where type =~ "microsoft.network/routetables"
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| extend routeCount = array_length(properties.routes)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    routeCount,
+    tags
+| order by resourceGroup asc

@@ -1,0 +1,24 @@
+// Empty App Service Plans
+// App Service Plans with zero apps deployed still incur compute charges.
+// A Basic B1 plan costs ~$55/mo, Standard S1 ~$73/mo even with no apps.
+// These are safe to delete once confirmed no apps are expected.
+
+resources
+| where type =~ "microsoft.web/serverfarms"
+| extend numberOfSites = toint(properties.numberOfSites)
+| extend createdTime = todatetime(properties.creationTime)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| where numberOfSites == 0
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    skuTier = tostring(sku.tier),
+    skuName = tostring(sku.name),
+    skuCapacity = toint(sku.capacity),
+    numberOfSites,
+    createdTime,
+    age_days,
+    tags
+| order by skuTier desc, age_days desc
