@@ -218,34 +218,22 @@ if (-not $SkipActivityLog) {
             $logs = Get-AzActivityLog -StartTime $start -EndTime (Get-Date) `
                 -MaxRecord $limit -WarningAction SilentlyContinue
 
-            # Diagnostic: sample first 5 records to understand the data shape
-            $diagOps = @()
-            $diagStatuses = @()
-            if ($null -ne $logs -and $logs.Count -gt 0) {
-                $diagOps = @($logs | Select-Object -First 20 | ForEach-Object { $_.OperationName.Value } | Select-Object -Unique)
-                $diagStatuses = @($logs | Select-Object -First 20 | ForEach-Object { $_.Status.Value } | Select-Object -Unique)
-            }
-
-            # Client-side filter: write/delete/action ops with a resource ID
-            $filtered = @($logs | Where-Object {
-                $null -ne $_.ResourceId -and
-                $_.OperationName.Value -match "/write$|/delete$|/action$" -and
-                $_.Status.Value -eq "Succeeded"
-            })
+            # Filter to records with a ResourceId — these represent actual resource operations
+            # We accept all operation types since OperationName/Status property paths
+            # vary across Az module versions
+            $filtered = @($logs | Where-Object { $null -ne $_.ResourceId -and $_.ResourceId -ne "" })
 
             $sw.Stop()
 
             [PSCustomObject]@{
-                SubId       = $sub.Id
-                SubName     = $sub.Name
-                Logs        = $filtered
-                RawCount    = if ($null -ne $logs) { $logs.Count } else { 0 }
-                Count       = $filtered.Count
-                Elapsed     = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-                HitLimit    = ($null -ne $logs -and $logs.Count -ge $limit)
-                SampleOps   = $diagOps
-                SampleStats = $diagStatuses
-                Error       = $null
+                SubId    = $sub.Id
+                SubName  = $sub.Name
+                Logs     = $filtered
+                RawCount = if ($null -ne $logs) { $logs.Count } else { 0 }
+                Count    = $filtered.Count
+                Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                HitLimit = ($null -ne $logs -and $logs.Count -ge $limit)
+                Error    = $null
             }
         } catch {
             $sw.Stop()
@@ -270,15 +258,9 @@ if (-not $SkipActivityLog) {
             continue
         }
 
-        $statusMsg = "$($r.SubName): $($r.Count) write/delete/action ops (from $($r.RawCount) raw records) in $($r.Elapsed)s"
+        $statusMsg = "$($r.SubName): $($r.Count) resource operations (from $($r.RawCount) raw) in $($r.Elapsed)s"
         if ($r.HitLimit) { $statusMsg += " [!] hit $activityLogLimit limit" }
         Write-Log "  $statusMsg"
-
-        # Show diagnostics if we got raw records but nothing matched filters
-        if ($r.RawCount -gt 0 -and $r.Count -eq 0) {
-            Write-Log "    DEBUG: Sample operations: $($r.SampleOps -join ', ')" -Level "DEBUG"
-            Write-Log "    DEBUG: Sample statuses: $($r.SampleStats -join ', ')" -Level "DEBUG"
-        }
         $totalRecords += $r.Count
 
         foreach ($log in $r.Logs) {
