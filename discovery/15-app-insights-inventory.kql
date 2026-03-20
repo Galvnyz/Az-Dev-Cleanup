@@ -1,0 +1,26 @@
+// Application Insights Inventory
+// App Insights instances with connection to Log Analytics workspace.
+// Orphaned instances (connected app deleted) continue ingesting data
+// and incurring costs. Check if the linked workspace is still active.
+
+resources
+| where type =~ "microsoft.insights/components"
+| extend createdTime = todatetime(properties.CreationDate)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend workspaceId = tostring(properties.WorkspaceResourceId)
+| extend appType = tostring(properties.Application_Type)
+| extend ingestionMode = tostring(properties.IngestionMode)
+| extend retentionDays = toint(properties.RetentionInDays)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    appType,
+    ingestionMode,
+    retentionDays,
+    workspaceId,
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc

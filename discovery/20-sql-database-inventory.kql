@@ -1,0 +1,29 @@
+// SQL Database Inventory
+// SQL databases and servers with pricing tier, max size, and age.
+// Idle SQL databases are expensive — even a Basic DTU database costs ~$5/mo,
+// Standard S0 costs ~$15/mo, and higher tiers scale quickly.
+
+resources
+| where type =~ "microsoft.sql/servers/databases"
+| where name != "master"
+| extend createdTime = todatetime(properties.creationDate)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend skuTier = tostring(sku.tier)
+| extend skuName = tostring(sku.name)
+| extend maxSizeGB = todouble(properties.maxSizeBytes) / 1073741824
+| extend status = tostring(properties.status)
+| extend zoneRedundant = tobool(properties.zoneRedundant)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    skuTier,
+    skuName,
+    maxSizeGB = round(maxSizeGB, 1),
+    status,
+    zoneRedundant,
+    createdTime,
+    age_days,
+    tags
+| order by skuTier desc, age_days desc

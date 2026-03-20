@@ -1,0 +1,23 @@
+// Orphaned Network Interfaces
+// NICs not attached to any VM. Commonly left behind when VMs are deleted.
+// Orphaned NICs are free but cause clutter and block empty-RG cleanup.
+// Excludes NICs managed by AKS, Application Gateway, or other services.
+
+resources
+| where type =~ "microsoft.network/networkinterfaces"
+| where isnull(properties.virtualMachine.id) or properties.virtualMachine.id == ""
+| extend managedBy = tostring(properties.nicType)
+| extend privateIP = tostring(properties.ipConfigurations[0].properties.privateIPAddress)
+| extend subnetId = tostring(properties.ipConfigurations[0].properties.subnet.id)
+| extend hasPublicIP = isnotnull(properties.ipConfigurations[0].properties.publicIPAddress.id)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    privateIP,
+    hasPublicIP,
+    subnetId,
+    managedBy,
+    tags
+| order by resourceGroup asc, name asc

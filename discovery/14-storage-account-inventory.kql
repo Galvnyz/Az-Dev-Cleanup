@@ -1,0 +1,28 @@
+// Storage Account Inventory
+// Full inventory of storage accounts with age, kind, SKU, and access tier.
+// Many storage accounts are auto-created by other services (ML workspaces,
+// Function Apps, diagnostics) and left behind when the parent is deleted.
+// Cross-reference with cost data to find expensive + old storage accounts.
+
+resources
+| where type =~ "microsoft.storage/storageaccounts"
+| extend createdTime = todatetime(properties.creationTime)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend lastModified = todatetime(properties.lastModifiedTime)
+| extend daysSinceModified = datetime_diff('day', now(), lastModified)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    kind,
+    sku = tostring(sku.name),
+    accessTier = tostring(properties.accessTier),
+    httpsOnly = tostring(properties.supportsHttpsTrafficOnly),
+    minimumTlsVersion = tostring(properties.minimumTlsVersion),
+    createdTime,
+    age_days,
+    lastModified,
+    daysSinceModified,
+    tags
+| order by age_days desc

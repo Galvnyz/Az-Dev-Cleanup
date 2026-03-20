@@ -1,0 +1,22 @@
+// Empty Load Balancers
+// Load balancers with no backend pool members. Standard SKU LBs cost ~$18/mo
+// even with no backends. Basic SKU LBs are free but create clutter.
+
+resources
+| where type =~ "microsoft.network/loadbalancers"
+| extend backendPools = properties.backendAddressPools
+| extend hasBackends = array_length(backendPools) > 0
+    and isnotnull(backendPools[0].properties.loadBalancerBackendAddresses)
+    and array_length(backendPools[0].properties.loadBalancerBackendAddresses) > 0
+| where hasBackends == false
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    skuName = tostring(sku.name),
+    skuTier = tostring(sku.tier),
+    frontendCount = array_length(properties.frontendIPConfigurations),
+    ruleCount = array_length(properties.loadBalancingRules),
+    tags
+| order by skuName desc, resourceGroup asc

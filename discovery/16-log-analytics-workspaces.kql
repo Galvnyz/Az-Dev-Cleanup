@@ -1,0 +1,23 @@
+// Log Analytics Workspace Inventory
+// Workspaces accumulate data retention costs long after monitored
+// resources are deleted. Check retention settings and connected solutions.
+
+resources
+| where type =~ "microsoft.operationalinsights/workspaces"
+| extend createdTime = todatetime(properties.createdDate)
+| extend age_days = datetime_diff('day', now(), createdTime)
+| extend retentionDays = toint(properties.retentionInDays)
+| extend sku = tostring(properties.sku.name)
+| extend dailyCapGB = tostring(properties.workspaceCapping.dailyQuotaGb)
+| project
+    subscriptionId,
+    resourceGroup,
+    name,
+    location,
+    sku,
+    retentionDays,
+    dailyCapGB,
+    createdTime,
+    age_days,
+    tags
+| order by age_days desc
