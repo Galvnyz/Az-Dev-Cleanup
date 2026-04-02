@@ -35,33 +35,45 @@ Staged deletion with grace periods, notifications, and export-before-delete safe
 ## Repository Structure
 
 ```
-discovery/       # KQL queries for Resource Graph and Log Analytics
-cleanup/         # PowerShell scripts for safe resource cleanup
+discovery/       # 20 KQL queries + orchestration scripts for tenant inventory
+cleanup/         # 10 PowerShell scripts for safe resource cleanup + orchestration
+reporting/       # Cost projection, baselines, Excel export, comparison tools
 policies/        # Azure Policy definitions (JSON) for governance
-automation/      # Pipeline and runbook scaffolding
-docs/            # Strategy documents and decision records
+automation/      # GitHub Actions workflows + pre-flight validation
+tests/           # Pester test suites (8 test files, 27+ tests)
+docs/            # Strategy, prerequisites, troubleshooting, operational runbook
 ```
 
 ## Quick Start
 
-### 1. Run Discovery Queries
+For the full step-by-step operational workflow, see the **[Operational Runbook](docs/operational-runbook.md)**.
 
-Open the [Azure Resource Graph Explorer](https://portal.azure.com/#blade/HubsExtension/ArgQueryBlade) and run the queries in `discovery/`.
+### 1. Run Discovery
 
-### 2. Review the Inventory
+```powershell
+./discovery/Invoke-TenantDiscovery.ps1
+```
 
-Export query results to CSV and review with stakeholders.
+### 2. Dry Run (see what would be cleaned up)
 
-### 3. Apply Governance Policies
+```powershell
+./cleanup/Invoke-CleanupDryRun.ps1
+```
 
-Deploy policies from `policies/` in **audit mode** first to understand impact before enforcing.
+### 3. Project Cost Savings
 
-### 4. Run Cleanup Scripts
+```powershell
+./reporting/Get-CostSavingsProjection.ps1 -DryRunCsv ./cleanup-dryrun-{timestamp}/cleanup-dryrun.csv
+```
 
-Use scripts in `cleanup/` to safely remove confirmed-dead resources. All scripts support `-WhatIf` for dry runs.
+### 4. Execute Cleanup (with safety gates)
+
+```powershell
+./cleanup/Invoke-CleanupExecution.ps1
+```
 
 ## Prerequisites
 
-- Azure PowerShell module (`Az`) or Azure CLI
+- PowerShell 7.x with Az modules (see [docs/prerequisites.md](docs/prerequisites.md))
 - Permissions: Reader across all subscriptions for discovery, Contributor for cleanup
 - Access to Entra ID (Azure AD) for owner cross-referencing

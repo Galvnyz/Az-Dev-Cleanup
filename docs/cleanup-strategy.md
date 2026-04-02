@@ -31,11 +31,14 @@ The Azure dev tenant has accumulated resources over 10+ years. Many resources ar
 - Generate a summary report with counts by category
 
 ### Phase 2: Quick Wins (Week 2-3)
-- Delete empty resource groups (`Remove-EmptyResourceGroups.ps1`)
-- Delete unattached disks older than 90 days (`Remove-UnattachedDisks.ps1`)
-- Delete unused public IPs (`Remove-UnusedPublicIPs.ps1`)
-- Delete old snapshots (90+ days)
-- All with `-WhatIf` first, then actual deletion
+- Run consolidated dry-run: `Invoke-CleanupDryRun.ps1` (all 8 scripts in WhatIf)
+- Review consolidated report and cost savings projection with stakeholders
+- Capture baseline: `Save-TenantBaseline.ps1`
+- Execute cleanup: `Invoke-CleanupExecution.ps1` (includes before/after comparison)
+- Individual scripts also available for targeted cleanup:
+  - `Remove-EmptyResourceGroups.ps1`, `Remove-UnattachedDisks.ps1`
+  - `Remove-UnusedPublicIPs.ps1`, `Remove-OldSnapshots.ps1`
+  - `Remove-StoppedVMs.ps1`, `Remove-UnusedNSGs.ps1`
 
 ### Phase 3: Governance (Week 3-4)
 - Deploy tag policies in **Audit** mode (`policies/require-tags.json`)
@@ -50,10 +53,14 @@ The Azure dev tenant has accumulated resources over 10+ years. Many resources ar
 - 30-day grace period
 
 ### Phase 5: Ongoing Automation (Month 2-3)
-- Deploy scheduled cleanup workflow (`automation/scheduled-cleanup.yml`)
+- Deploy scheduled cleanup workflow (`automation/scheduled-cleanup.yml`) with:
+  - Consolidated dry-run and execution via orchestrators
+  - Cost savings projection in workflow artifacts
+  - GITHUB_STEP_SUMMARY reporting and webhook notifications
+  - `production` environment approval gate for destructive operations
 - Switch tag policies from Audit to Deny
 - Set up automated expiry enforcement (`Remove-ExpiredResources.ps1`)
-- Monthly discovery report generation
+- Monthly discovery report generation with before/after tracking
 
 ## Risk Mitigation
 
