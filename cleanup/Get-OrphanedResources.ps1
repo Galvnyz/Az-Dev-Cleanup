@@ -27,8 +27,8 @@ param(
     [string]$SubscriptionId,
 
     [Parameter()]
-    [ValidateRange(1, 365)]
-    [int]$LookbackDays = 365,
+    [ValidateRange(1, 90)]
+    [int]$LookbackDays = 90,
 
     [Parameter()]
     [string]$OutputPath = "./orphaned-resources.csv"
