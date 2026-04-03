@@ -24,6 +24,7 @@ baseline-*.json
 # IDE and tooling
 .claude/
 .vscode/
+.superpowers/
 *.code-workspace
 
 # OS artifacts
