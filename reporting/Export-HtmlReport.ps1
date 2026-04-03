@@ -982,25 +982,211 @@ Add-Html '</table>'
 
 Add-Html '</section>'
 
+# ── Section: Resource Inventory ───────────────────────────────────────────────
+
 Add-Html '<section id="inventory">'
-Add-Html '  <h2>Inventory</h2>'
-Add-Html '  <!-- Section: Inventory -->'
+Add-Html '  <h2>Resource Inventory</h2>'
+Add-Html '  <input type="text" class="search-input" id="inventorySearch" placeholder="Filter resources..." onkeyup="filterTable(''inventoryTable'', this.value)">'
+Add-Html '  <table id="inventoryTable">'
+Add-Html '    <thead>'
+Add-Html '      <tr>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 0)">Name</th>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 1)">Type</th>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 2)">Resource Group</th>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 3)">Location</th>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 4)">Age (days)</th>'
+Add-Html '        <th onclick="sortTable(''inventoryTable'', 5)">Tags</th>'
+Add-Html '      </tr>'
+Add-Html '    </thead>'
+Add-Html '    <tbody>'
+
+$invRowIndex = 0
+foreach ($res in $inventory) {
+    $rName     = ConvertTo-SafeHtml $res.name
+    $rType     = ConvertTo-SafeHtml $res.type
+    $rGroup    = ConvertTo-SafeHtml $res.resourceGroup
+    $rLocation = ConvertTo-SafeHtml $res.location
+    $rAge      = if ($res.age_days -and $res.age_days -ne '') { [int]$res.age_days } else { $null }
+    $rAgeStr   = if ($null -ne $rAge) { "$rAge" } else { "-" }
+
+    # Parse tags: strip @{ and }, split by ; then key=value
+    $tagHtml = ""
+    if ($res.tags -and $res.tags -ne '' -and $res.tags -ne '@{}') {
+        $tagStr = $res.tags -replace '^\@\{', '' -replace '\}$', ''
+        $tagParts = $tagStr -split ';'
+        foreach ($tp in $tagParts) {
+            $tp = $tp.Trim()
+            if ($tp) {
+                $safeTag = ConvertTo-SafeHtml $tp
+                $tagHtml += "<span class=`"tag-pill`">$safeTag</span>"
+            }
+        }
+    }
+
+    $rowClass = ""
+    $rowStyle = ""
+    if ($invRowIndex -ge 500) {
+        $rowClass = ' class="hidden-row"'
+        $rowStyle = ' style="display:none"'
+    }
+    Add-Html "    <tr$rowClass$rowStyle><td>$rName</td><td>$rType</td><td>$rGroup</td><td>$rLocation</td><td>$rAgeStr</td><td>$tagHtml</td></tr>"
+    $invRowIndex++
+}
+
+Add-Html '    </tbody>'
+Add-Html '  </table>'
+
+if ($inventory.Count -gt 500) {
+    Add-Html "  <div style=`"text-align:center; margin-top:16px;`">"
+    Add-Html "    <button onclick=`"showAllRows('inventoryTable', this)`" style=`"background:var(--bg-card); border:1px solid var(--accent-teal); color:var(--accent-teal); padding:10px 24px; border-radius:6px; cursor:pointer; font-size:14px;`">Show all $($inventory.Count) resources</button>"
+    Add-Html "  </div>"
+}
+
 Add-Html '</section>'
 
-Add-Html '<section id="activity">'
-Add-Html '  <h2>Activity</h2>'
-Add-Html '  <!-- Section: Activity -->'
-Add-Html '</section>'
+# ── Section: Activity Analysis ───────────────────────────────────────────────
+
+if ($rgActivity.Count -gt 0 -or $lastTouch.Count -gt 0) {
+    Add-Html '<section id="activity">'
+    Add-Html '  <h2>Activity Analysis</h2>'
+
+    $dormantRGs = @($rgActivity | Where-Object {
+        $_.DaysSinceActive -and [double]$_.DaysSinceActive -ge 60
+    })
+
+    Add-Html '  <div class="stat-row">'
+    Add-Html "    <div class=`"stat-box`"><div class=`"stat-value`">$($rgActivity.Count)</div><div class=`"stat-label`">RGs Analyzed</div></div>"
+    Add-Html "    <div class=`"stat-box`"><div class=`"stat-value`" style=`"color:var(--accent-amber)`">$($dormantRGs.Count)</div><div class=`"stat-label`">Dormant RGs (60+ days)</div></div>"
+    Add-Html "    <div class=`"stat-box`"><div class=`"stat-value`">$($lastTouch.Count)</div><div class=`"stat-label`">Resources with Last-Touch Data</div></div>"
+    Add-Html '  </div>'
+
+    if ($rgActivity.Count -gt 0) {
+        $sortedRGActivity = $rgActivity | Sort-Object { if ($_.DaysSinceActive) { [double]$_.DaysSinceActive } else { 0 } } -Descending
+
+        Add-Html '  <table id="activityTable">'
+        Add-Html '    <thead>'
+        Add-Html '      <tr>'
+        Add-Html '        <th onclick="sortTable(''activityTable'', 0)">Resource Group</th>'
+        Add-Html '        <th onclick="sortTable(''activityTable'', 1)">Subscription</th>'
+        Add-Html '        <th onclick="sortTable(''activityTable'', 2)">Last Activity</th>'
+        Add-Html '        <th onclick="sortTable(''activityTable'', 3)">Last Caller</th>'
+        Add-Html '        <th onclick="sortTable(''activityTable'', 4)">Days Since Active</th>'
+        Add-Html '      </tr>'
+        Add-Html '    </thead>'
+        Add-Html '    <tbody>'
+
+        $actRowIndex = 0
+        foreach ($rga in $sortedRGActivity) {
+            $aRG        = ConvertTo-SafeHtml $rga.ResourceGroup
+            $aSub       = ConvertTo-SafeHtml $rga.SubscriptionName
+            $aLastAct   = if ($rga.LastActivity) {
+                try { ([datetime]$rga.LastActivity).ToString('yyyy-MM-dd HH:mm') } catch { ConvertTo-SafeHtml $rga.LastActivity }
+            } else { "-" }
+            $aCaller    = ConvertTo-SafeHtml $rga.LastCaller
+            $aDays      = if ($rga.DaysSinceActive) { [int][double]$rga.DaysSinceActive } else { 0 }
+
+            $warnClass = if ($aDays -ge 60) { ' class="warning-row"' } else { "" }
+            $hiddenAttr = ""
+            if ($actRowIndex -ge 50) {
+                $hiddenAttr = if ($warnClass) {
+                    ' class="warning-row hidden-row" style="display:none"'
+                } else {
+                    ' class="hidden-row" style="display:none"'
+                }
+                $warnClass = ""
+            }
+            $rowAttr = if ($hiddenAttr) { $hiddenAttr } else { $warnClass }
+
+            Add-Html "    <tr$rowAttr><td>$aRG</td><td>$aSub</td><td>$aLastAct</td><td>$aCaller</td><td>$aDays</td></tr>"
+            $actRowIndex++
+        }
+
+        Add-Html '    </tbody>'
+        Add-Html '  </table>'
+
+        if ($rgActivity.Count -gt 50) {
+            Add-Html "  <div style=`"text-align:center; margin-top:16px;`">"
+            Add-Html "    <button onclick=`"showAllRows('activityTable', this)`" style=`"background:var(--bg-card); border:1px solid var(--accent-teal); color:var(--accent-teal); padding:10px 24px; border-radius:6px; cursor:pointer; font-size:14px;`">Show all $($rgActivity.Count) resource groups</button>"
+            Add-Html "  </div>"
+        }
+    }
+
+    Add-Html '</section>'
+} else {
+    Add-Html '<section id="activity">'
+    Add-Html '  <h2>Activity Analysis</h2>'
+    Add-Html '  <p style="color:var(--text-muted)">Activity Log data not available. Run discovery with Activity Log enabled.</p>'
+    Add-Html '</section>'
+}
+
+# ── Section: Recommendations ─────────────────────────────────────────────────
 
 Add-Html '<section id="recommendations">'
 Add-Html '  <h2>Recommendations</h2>'
-Add-Html '  <!-- Section: Recommendations -->'
+
+$recommendations = @()
+
+if ($emptyRGs.Count -gt 0) {
+    $recommendations += @{ Priority="Quick Win"; Color="#64ffda"; Icon="&#9898;"; Title="Delete $($emptyRGs.Count) empty resource groups"; Detail="Zero resources, zero cost impact. Run: Remove-EmptyResourceGroups.ps1 -WhatIf" }
+}
+if ($stoppedVMs.Count -gt 0) {
+    $recommendations += @{ Priority="Cost Savings"; Color="#f59e0b"; Icon="&#128176;"; Title="Review $($stoppedVMs.Count) stopped VMs"; Detail="Deallocated VMs still incur disk charges. Run: Remove-StoppedVMs.ps1 -WhatIf" }
+}
+if ($untaggedCount -gt 0) {
+    $recommendations += @{ Priority="Governance"; Color="#8b5cf6"; Icon="&#127991;"; Title="$untaggedCount resources lack mandatory tags"; Detail="Deploy require-tags.json policy in Audit mode first." }
+}
+if ($emptyAppPlans.Count -gt 0) {
+    $recommendations += @{ Priority="Cleanup"; Color="#3b82f6"; Icon="&#128451;"; Title="Remove $($emptyAppPlans.Count) empty App Service Plans"; Detail="No apps deployed. Paid tiers still billing. Run: review SKU tiers before deletion." }
+}
+if ($orphanedNICs.Count -gt 0) {
+    $recommendations += @{ Priority="Review"; Color="#ec4899"; Icon="&#128268;"; Title="$($orphanedNICs.Count) orphaned network interfaces"; Detail="NICs not attached to any VM. May be Private Endpoint managed — verify before deletion." }
+}
+if ($unusedNSGs.Count -gt 0) {
+    $recommendations += @{ Priority="Cleanup"; Color="#3b82f6"; Icon="&#128737;"; Title="$($unusedNSGs.Count) unused Network Security Groups"; Detail="NSGs not attached to any subnet or NIC. Verify before removal." }
+}
+if ($emptyLBs.Count -gt 0) {
+    $recommendations += @{ Priority="Cleanup"; Color="#3b82f6"; Icon="&#9878;"; Title="$($emptyLBs.Count) empty Load Balancers"; Detail="Load balancers with no backend pools. Review and remove if unused." }
+}
+
+if ($recommendations.Count -eq 0) {
+    Add-Html '  <p style="color:var(--text-muted)">No actionable recommendations found. Tenant looks clean!</p>'
+} else {
+    foreach ($rec in $recommendations) {
+        $recTitle  = ConvertTo-SafeHtml $rec.Title
+        $recDetail = ConvertTo-SafeHtml $rec.Detail
+        $recColor  = $rec.Color
+        $recIcon   = $rec.Icon
+        $recPri    = ConvertTo-SafeHtml $rec.Priority
+        Add-Html "  <div class=`"recommendation-card`" style=`"border-left-color:$recColor`">"
+        Add-Html "    <div class=`"rec-icon`">$recIcon</div>"
+        Add-Html "    <div>"
+        Add-Html "      <div class=`"rec-title`">$recTitle</div>"
+        Add-Html "      <div class=`"rec-detail`">$recDetail</div>"
+        Add-Html "      <span class=`"badge`" style=`"background:rgba(255,255,255,0.08); color:$recColor; margin-top:8px;`">$recPri</span>"
+        Add-Html "    </div>"
+        Add-Html "  </div>"
+    }
+}
+
+Add-Html '<div style="background:var(--bg-card); border-radius:8px; padding:24px; margin-top:24px;">'
+Add-Html '  <h3 style="color:#e6f1ff; margin-bottom:12px;">Next Steps</h3>'
+Add-Html '  <ol style="color:var(--text-muted); line-height:2;">'
+Add-Html '    <li>Run the full cleanup dry-run: <code>Invoke-CleanupDryRun.ps1</code></li>'
+Add-Html '    <li>Review the dry-run report with stakeholders</li>'
+Add-Html '    <li>Deploy tag policies in Audit mode: <code>policies/require-tags.json</code></li>'
+Add-Html '    <li>Execute approved cleanup: <code>Invoke-CleanupExecution.ps1</code></li>'
+Add-Html '  </ol>'
+Add-Html '</div>'
+
 Add-Html '</section>'
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
+$subscriptionCount = ($summary.Subscriptions -split '; ').Count
+$costDisplay = if ($totalCost -gt 0) { " &middot; `${0:N2} spend ({1}d)" -f $totalCost, $costDays } else { "" }
 Add-Html '<div class="footer">'
-Add-Html "  Generated on $($summary.RunDate) by Az-Dev-Cleanup &middot; Tenant Discovery Report"
+Add-Html "  Generated on $($summary.RunDate) &middot; Az-Dev-Cleanup Tenant Discovery Report<br>"
+Add-Html "  $totalResources resources &middot; $subscriptionCount subscriptions$costDisplay"
 Add-Html '</div>'
 
 Add-Html '</div><!-- /.main -->'
@@ -1051,6 +1237,53 @@ $js = @'
 '@
 
 Add-Html $js
+
+$js2 = @'
+<script>
+function filterTable(tableId, query) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var rows = table.querySelectorAll('tbody tr');
+    var q = query.toLowerCase();
+    rows.forEach(function(row) {
+        var text = row.textContent.toLowerCase();
+        var match = !q || text.indexOf(q) !== -1;
+        row.style.display = match ? '' : 'none';
+    });
+}
+
+function sortTable(tableId, colIndex) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    var th = table.querySelectorAll('th')[colIndex];
+    var asc = th.dataset.sortDir !== 'asc';
+    th.dataset.sortDir = asc ? 'asc' : 'desc';
+    rows.sort(function(a, b) {
+        var aVal = a.cells[colIndex].textContent.trim();
+        var bVal = b.cells[colIndex].textContent.trim();
+        var aNum = parseFloat(aVal);
+        var bNum = parseFloat(bVal);
+        if (!isNaN(aNum) && !isNaN(bNum)) return asc ? aNum - bNum : bNum - aNum;
+        return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+    });
+    rows.forEach(function(row) { tbody.appendChild(row); });
+}
+
+function showAllRows(tableId, btn) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    table.querySelectorAll('tbody tr.hidden-row').forEach(function(row) {
+        row.classList.remove('hidden-row');
+        row.style.display = '';
+    });
+    btn.style.display = 'none';
+}
+</script>
+'@
+Add-Html $js2
+
 Add-Html '</body>'
 Add-Html '</html>'
 
