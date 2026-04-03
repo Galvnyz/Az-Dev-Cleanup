@@ -65,7 +65,7 @@ param(
     [switch]$SkipEntraId,
 
     [Parameter()]
-    [ValidateRange(1, 365)]
+    [ValidateRange(1, 90)]
     [int]$LookbackDays = 90,
 
     [Parameter()]
@@ -118,10 +118,7 @@ $summary = [ordered]@{
 
 Write-Log "--- Phase 1: Resource Graph Queries ---"
 
-$discoveryDir = Join-Path $PSScriptRoot "../discovery"
-if (-not (Test-Path $discoveryDir)) {
-    $discoveryDir = "./discovery"
-}
+$discoveryDir = if ($PSScriptRoot) { $PSScriptRoot } else { "./discovery" }
 
 $queryFiles = Get-ChildItem -Path $discoveryDir -Filter "*.kql" | Sort-Object Name
 
@@ -244,6 +241,9 @@ if (-not $SkipActivityLog) {
                         # If this chunk also hit the limit, halve the window for remaining queries
                         if ($chunkLogs.Count -ge $limit -and $chunkDays -gt 1) {
                             $chunkDays = [math]::Max(1, [math]::Floor($chunkDays / 2))
+                        } elseif ($chunkLogs.Count -ge $limit) {
+                            # Already at minimum 1-day window — this day's data is truncated
+                            $truncated = $true
                         }
                     }
 
@@ -261,15 +261,16 @@ if (-not $SkipActivityLog) {
             $sw.Stop()
 
             [PSCustomObject]@{
-                SubId    = $sub.Id
-                SubName  = $sub.Name
-                Logs     = $filtered
-                RawCount = if ($null -ne $logs) { @($logs).Count } else { 0 }
-                Count    = $filtered.Count
-                Elapsed  = [math]::Round($sw.Elapsed.TotalSeconds, 1)
-                HitLimit = $hitLimit
-                Chunked  = $hitLimit
-                Error    = $null
+                SubId     = $sub.Id
+                SubName   = $sub.Name
+                Logs      = $filtered
+                RawCount  = if ($null -ne $logs) { @($logs).Count } else { 0 }
+                Count     = $filtered.Count
+                Elapsed   = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                HitLimit  = $hitLimit
+                Chunked   = $hitLimit
+                Truncated = if ($truncated) { $true } else { $false }
+                Error     = $null
             }
         } catch {
             $sw.Stop()
@@ -297,7 +298,8 @@ if (-not $SkipActivityLog) {
 
         $statusMsg = "$($r.SubName): $($r.Count) resource operations (from $($r.RawCount) raw) in $($r.Elapsed)s"
         if ($r.Chunked) { $statusMsg += " (chunked)" }
-        Write-Log "  $statusMsg"
+        if ($r.Truncated) { $statusMsg += " WARNING: some single-day windows exceeded $activityLogLimit records — data may be incomplete" }
+        Write-Log "  $statusMsg" -Level $(if ($r.Truncated) { "WARN" } else { "INFO" })
         $totalRecords += $r.Count
 
         foreach ($log in $r.Logs) {
@@ -463,11 +465,16 @@ if (-not $SkipCostData) {
 
         Write-Log "  $($r.SubName): $($r.Rows.Count) resource groups in $($r.Elapsed)s"
 
+        # Resolve column indices from metadata (don't assume fixed order)
+        $colNames = $r.Columns | ForEach-Object { $_.name }
+        $idxCost = [array]::IndexOf($colNames, 'Cost')
+        $idxRg   = [array]::IndexOf($colNames, 'ResourceGroupName')
+        $idxCurr = [array]::IndexOf($colNames, 'Currency')
+
         foreach ($row in $r.Rows) {
-            # Cost Management query returns: [cost, resourceGroupName, currency]
-            $cost = [decimal]$row[0]
-            $rg = $row[1]
-            $currency = $row[2]
+            $cost = [decimal]$row[$idxCost]
+            $rg = $row[$idxRg]
+            $currency = $row[$idxCurr]
 
             $key = "$($r.SubId)/$rg"
             $costByRG[$key] = [PSCustomObject]@{
@@ -490,7 +497,8 @@ if (-not $SkipCostData) {
 
         $totalCost = ($costReport | Measure-Object -Property TotalCost -Sum).Sum
         $zeroCostRGs = ($costReport | Where-Object { $_.TotalCost -eq 0 }).Count
-        $summary.TotalCostLast30Days = [math]::Round($totalCost, 2)
+        $summary.TotalCost = [math]::Round($totalCost, 2)
+        $summary.CostLookbackDays = $CostLookbackDays
         $summary.ZeroCostResourceGroups = $zeroCostRGs
         Write-Log "  Total cost (last $CostLookbackDays days): `$$([math]::Round($totalCost, 2))"
         Write-Log "  Resource groups with zero cost: $zeroCostRGs"
@@ -675,11 +683,11 @@ if ($summary.Contains("DormantResourceGroups")) {
     )
 }
 
-if ($summary.Contains("TotalCostLast30Days")) {
+if ($summary.Contains("TotalCost")) {
     $reportLines += @(
         ""
         "## Cost Analysis (last $CostLookbackDays days)"
-        "- Total spend: **$($summary.TotalCostLast30Days)**"
+        "- Total spend: **$($summary.TotalCost)**"
         "- Resource groups with zero cost: **$($summary.ZeroCostResourceGroups)**"
         "- See ``top-20-cost-resource-groups.csv`` for top spenders"
     )

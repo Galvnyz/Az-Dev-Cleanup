@@ -86,7 +86,7 @@ jobs:
           retention-days: 90
 
   cleanup-dry-run:
-    name: Cleanup Dry Run
+    name: Cleanup Dry Run (All Scripts)
     needs: preflight
     runs-on: ubuntu-latest
     if: github.event.inputs.action == 'cleanup-dry-run'
@@ -100,26 +100,84 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Dry Run - Expired Resources
+      - name: Run Consolidated Dry Run
         uses: azure/powershell@v2
         with:
           azPSVersion: latest
           inlineScript: |
-            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1" -WhatIf
+            $outputDir = "./cleanup-dryrun-run${{ github.run_number }}"
+            & "${{ env.SCRIPTS_PATH }}/Invoke-CleanupDryRun.ps1" -OutputDir $outputDir
 
-      - name: Dry Run - Empty Resource Groups
+      - name: Cost Savings Projection
+        uses: azure/powershell@v2
+        if: always()
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            $dryRunCsv = Get-ChildItem -Path "./cleanup-dryrun-run${{ github.run_number }}" -Filter "cleanup-dryrun.csv" -Recurse | Select-Object -First 1
+            if ($dryRunCsv) {
+              $outputPath = "./cleanup-dryrun-run${{ github.run_number }}/cost-savings.csv"
+              & "./reporting/Get-CostSavingsProjection.ps1" -DryRunCsv $dryRunCsv.FullName -OutputPath $outputPath
+            } else {
+              Write-Output "No dry-run CSV found — skipping cost projection"
+            }
+
+      - name: Write Job Summary
+        if: always()
         uses: azure/powershell@v2
         with:
           azPSVersion: latest
           inlineScript: |
-            & "${{ env.SCRIPTS_PATH }}/Remove-EmptyResourceGroups.ps1" -WhatIf
+            $summaryFile = $env:GITHUB_STEP_SUMMARY
+            "## Cleanup Dry Run Results`n" | Out-File -Append $summaryFile
+            "**Run:** #${{ github.run_number }} | **Triggered by:** ${{ github.actor }}`n" | Out-File -Append $summaryFile
+
+            $dryRunCsv = Get-ChildItem -Path "./cleanup-dryrun-run${{ github.run_number }}" -Filter "cleanup-dryrun.csv" -Recurse | Select-Object -First 1
+            if ($dryRunCsv) {
+              $data = Import-Csv $dryRunCsv.FullName
+              $grouped = $data | Group-Object Script
+              "| Script | Candidates |`n|--------|-----------|" | Out-File -Append $summaryFile
+              foreach ($g in $grouped) {
+                "| $($g.Name) | $($g.Count) |" | Out-File -Append $summaryFile
+              }
+              "`n**Total candidates:** $($data.Count)`n" | Out-File -Append $summaryFile
+            } else {
+              "No cleanup candidates found.`n" | Out-File -Append $summaryFile
+            }
+
+            $savingsCsv = Get-ChildItem -Path "./cleanup-dryrun-run${{ github.run_number }}" -Filter "cost-savings-summary.csv" -Recurse | Select-Object -First 1
+            if ($savingsCsv) {
+              $savings = Import-Csv $savingsCsv.FullName
+              $total = $savings | Where-Object { $_.Category -eq 'TOTAL' }
+              if ($total) {
+                "`n**Estimated monthly savings:** `$$($total.EstMonthlySavings)`n" | Out-File -Append $summaryFile
+              }
+            }
+
+      - name: Upload Dry Run Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dryrun-report-${{ github.run_number }}
+          path: ./cleanup-dryrun-run${{ github.run_number }}/
+          retention-days: 90
+
+      - name: Webhook Notification
+        if: always() && env.NOTIFICATION_WEBHOOK_URL != ''
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        run: |
+          CANDIDATES=$(cat ./cleanup-dryrun-run${{ github.run_number }}/cleanup-dryrun.csv 2>/dev/null | tail -n +2 | wc -l || echo 0)
+          curl -s -X POST "$NOTIFICATION_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"Azure Cleanup Dry Run #${{ github.run_number }}: ${CANDIDATES} candidates found. [View results](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}"
 
   cleanup-execute:
-    name: Cleanup Execute
+    name: Cleanup Execute (All Scripts)
     needs: preflight
     runs-on: ubuntu-latest
     if: github.event.inputs.action == 'cleanup-execute'
-    environment: production  # Requires manual approval
+    environment: production  # Requires manual approval via environment protection rules
     steps:
       - uses: actions/checkout@v4
 
@@ -130,23 +188,59 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Remove Expired Resources
+      - name: Execute Cleanup
         uses: azure/powershell@v2
         with:
           azPSVersion: latest
           inlineScript: |
-            & "${{ env.SCRIPTS_PATH }}/../automation/Remove-ExpiredResources.ps1"
+            $outputDir = "./cleanup-execution-run${{ github.run_number }}"
+            & "${{ env.SCRIPTS_PATH }}/Invoke-CleanupExecution.ps1" -Force -OutputDir $outputDir
 
-      - name: Remove Empty Resource Groups
+      - name: Write Job Summary
+        if: always()
         uses: azure/powershell@v2
         with:
           azPSVersion: latest
           inlineScript: |
-            & "${{ env.SCRIPTS_PATH }}/Remove-EmptyResourceGroups.ps1" -Force
+            $summaryFile = $env:GITHUB_STEP_SUMMARY
+            "## Cleanup Execution Results`n" | Out-File -Append $summaryFile
+            "**Run:** #${{ github.run_number }} | **Triggered by:** ${{ github.actor }}`n" | Out-File -Append $summaryFile
 
-      - name: Upload Cleanup Logs
+            $execCsv = Get-ChildItem -Path "./cleanup-execution-run${{ github.run_number }}" -Filter "cleanup-execution.csv" -Recurse | Select-Object -First 1
+            if ($execCsv) {
+              $data = Import-Csv $execCsv.FullName
+              $succeeded = ($data | Where-Object { $_.Action -match 'Removed|Tagged|Deleted' }).Count
+              $failed = ($data | Where-Object { $_.Action -match 'Failed' }).Count
+              "| Metric | Value |`n|--------|-------|" | Out-File -Append $summaryFile
+              "| Total processed | $($data.Count) |" | Out-File -Append $summaryFile
+              "| Succeeded | $succeeded |" | Out-File -Append $summaryFile
+              "| Failed | $failed |" | Out-File -Append $summaryFile
+            }
+
+            $comparison = Get-ChildItem -Path "./cleanup-execution-run${{ github.run_number }}" -Filter "comparison.csv" -Recurse | Select-Object -First 1
+            if ($comparison) {
+              "`n### Before/After Comparison`n" | Out-File -Append $summaryFile
+              $comp = Import-Csv $comparison.FullName
+              "| Resource Type | Before | After | Delta |`n|--------------|--------|-------|-------|" | Out-File -Append $summaryFile
+              foreach ($row in $comp) {
+                "| $($row.ResourceType) | $($row.Before) | $($row.After) | $($row.Delta) |" | Out-File -Append $summaryFile
+              }
+            }
+
+      - name: Upload Execution Results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: cleanup-logs-${{ github.run_number }}
-          path: ./cleanup-log-*.csv
+          name: cleanup-execution-${{ github.run_number }}
+          path: ./cleanup-execution-run${{ github.run_number }}/
           retention-days: 365
+
+      - name: Webhook Notification
+        if: always() && env.NOTIFICATION_WEBHOOK_URL != ''
+        env:
+          NOTIFICATION_WEBHOOK_URL: ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+        run: |
+          RESULT=$(cat ./cleanup-execution-run${{ github.run_number }}/cleanup-execution.csv 2>/dev/null | tail -n +2 | wc -l || echo 0)
+          curl -s -X POST "$NOTIFICATION_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"Azure Cleanup Execution #${{ github.run_number }}: ${RESULT} resources processed. [View results](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"}"

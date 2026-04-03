@@ -145,8 +145,9 @@ if (Test-Path $summaryFile) {
     if ($null -ne $summary.DormantResourceGroups) {
         $summaryRows += [PSCustomObject]@{ Metric = "Dormant RGs (60+ days)"; Value = $summary.DormantResourceGroups }
     }
-    if ($null -ne $summary.TotalCostLast30Days) {
-        $summaryRows += [PSCustomObject]@{ Metric = "Total Cost (30 days)"; Value = $summary.TotalCostLast30Days }
+    if ($null -ne $summary.TotalCost) {
+        $costDays = if ($summary.CostLookbackDays) { $summary.CostLookbackDays } else { 30 }
+        $summaryRows += [PSCustomObject]@{ Metric = "Total Cost ($costDays days)"; Value = $summary.TotalCost }
     }
     if ($null -ne $summary.ZeroCostResourceGroups) {
         $summaryRows += [PSCustomObject]@{ Metric = "Zero-Cost RGs"; Value = $summary.ZeroCostResourceGroups }
