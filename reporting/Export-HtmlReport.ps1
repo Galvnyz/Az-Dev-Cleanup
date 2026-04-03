@@ -608,26 +608,378 @@ Add-Html '  </div>'
 
 Add-Html '</div>'
 
-# ── Placeholder Sections ─────────────────────────────────────────────────────
+# ── Helper: HTML-encode ──────────────────────────────────────────────────────
+
+function ConvertTo-SafeHtml {
+    [CmdletBinding()]
+    param([Parameter()][AllowEmptyString()][string]$Text = '')
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    $Text -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+}
+
+# ── Section: Overview ────────────────────────────────────────────────────────
 
 Add-Html '<section id="overview">'
 Add-Html '  <h2>Overview</h2>'
-Add-Html '  <!-- Section: Overview -->'
+
+# --- Subscription table ---
+Add-Html '<table>'
+Add-Html '  <tr><th>Subscription</th><th>Resources</th><th>Types</th><th>Resource Groups</th><th>Locations</th></tr>'
+foreach ($sub in $subOverview) {
+    $subName = ConvertTo-SafeHtml $sub.subscriptionName
+    Add-Html "  <tr><td>$subName</td><td>$($sub.total_resources)</td><td>$($sub.resource_types)</td><td>$($sub.resource_groups)</td><td>$($sub.locations)</td></tr>"
+}
+Add-Html '</table>'
+
+# --- Resource type distribution (horizontal bar chart) ---
+$typeGroups = $inventory | Group-Object -Property type |
+    Sort-Object Count -Descending | Select-Object -First 15
+$maxTypeCount = if ($typeGroups.Count -gt 0) { ($typeGroups | Measure-Object -Property Count -Maximum).Maximum } else { 1 }
+$barHeight   = 22
+$barGap      = 4
+$labelX      = 10
+$barStartX   = 350
+$barMaxW     = 380
+$chartH      = ($barHeight + $barGap) * [math]::Max($typeGroups.Count, 1) + 30
+
+Add-Html '<div class="chart-container">'
+Add-Html '  <h3>Resource Type Distribution (Top 15)</h3>'
+Add-Html "  <svg viewBox=`"0 0 800 $chartH`" xmlns=`"http://www.w3.org/2000/svg`">"
+
+$yPos = 20
+foreach ($tg in $typeGroups) {
+    $typeName = ConvertTo-SafeHtml $tg.Name
+    $cnt      = $tg.Count
+    $barW     = [math]::Max([math]::Round(($cnt / $maxTypeCount) * $barMaxW, 1), 2)
+    Add-Html "    <text x=`"$($barStartX - 8)`" y=`"$($yPos + 15)`" text-anchor=`"end`" fill=`"#8892b0`" font-size=`"11`">$typeName</text>"
+    Add-Html "    <rect x=`"$barStartX`" y=`"$yPos`" width=`"$barW`" height=`"$barHeight`" rx=`"3`" fill=`"#64ffda`" opacity=`"0.8`"/>"
+    Add-Html "    <text x=`"$($barStartX + $barW + 6)`" y=`"$($yPos + 15)`" fill=`"#e6f1ff`" font-size=`"12`">$cnt</text>"
+    $yPos += ($barHeight + $barGap)
+}
+
+Add-Html '  </svg>'
+Add-Html '</div>'
+
+# --- Resource age histogram (vertical bar chart) ---
+$ageBrackets = $ageSummary | Group-Object -Property age_bracket | ForEach-Object {
+    [PSCustomObject]@{
+        Bracket = $_.Name
+        Total   = ($_.Group | Measure-Object -Property count_ -Sum).Sum
+    }
+}
+# Sort brackets in logical order
+$bracketOrder = @('< 1 year','1-2 years','2-3 years','3-5 years','5+ years')
+$sortedBrackets = @()
+foreach ($bo in $bracketOrder) {
+    $match = $ageBrackets | Where-Object { $_.Bracket -eq $bo }
+    if ($match) { $sortedBrackets += $match }
+}
+# Add any brackets not in the predefined order
+foreach ($ab in $ageBrackets) {
+    if ($ab.Bracket -notin $bracketOrder) { $sortedBrackets += $ab }
+}
+$ageBrackets = $sortedBrackets
+
+$maxAgeCount = if ($ageBrackets.Count -gt 0) { ($ageBrackets | Measure-Object -Property Total -Maximum).Maximum } else { 1 }
+$ageBarColors = @('#64ffda','#10b981','#f59e0b','#ef8c00','#ef4444')
+
+Add-Html '<div class="chart-container">'
+Add-Html '  <h3>Resource Age Distribution</h3>'
+Add-Html '  <svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">'
+
+$chartBottom = 250
+$chartTop    = 30
+$ageBarW     = 60
+$ageGap      = 30
+$ageStartX   = 80
+for ($i = 0; $i -lt $ageBrackets.Count; $i++) {
+    $ab       = $ageBrackets[$i]
+    $barH     = [math]::Max([math]::Round(($ab.Total / [math]::Max($maxAgeCount, 1)) * ($chartBottom - $chartTop), 1), 2)
+    $barX     = $ageStartX + $i * ($ageBarW + $ageGap)
+    $barY     = $chartBottom - $barH
+    $color    = if ($i -lt $ageBarColors.Count) { $ageBarColors[$i] } else { '#8892b0' }
+    $label    = ConvertTo-SafeHtml $ab.Bracket
+
+    Add-Html "    <rect x=`"$barX`" y=`"$barY`" width=`"$ageBarW`" height=`"$barH`" rx=`"3`" fill=`"$color`" opacity=`"0.85`"/>"
+    Add-Html "    <text x=`"$($barX + $ageBarW / 2)`" y=`"$($barY - 6)`" text-anchor=`"middle`" fill=`"#e6f1ff`" font-size=`"12`">$([int]$ab.Total)</text>"
+    Add-Html "    <text x=`"$($barX + $ageBarW / 2)`" y=`"$($chartBottom + 18)`" text-anchor=`"middle`" fill=`"#8892b0`" font-size=`"11`">$label</text>"
+}
+
+# Baseline
+Add-Html "    <line x1=`"$($ageStartX - 10)`" y1=`"$chartBottom`" x2=`"$($ageStartX + $ageBrackets.Count * ($ageBarW + $ageGap))`" y2=`"$chartBottom`" stroke=`"#8892b0`" stroke-width=`"1`"/>"
+
+Add-Html '  </svg>'
+Add-Html '</div>'
+
 Add-Html '</section>'
+
+# ── Section: Cost Analysis ───────────────────────────────────────────────────
 
 Add-Html '<section id="cost-analysis">'
 Add-Html '  <h2>Cost Analysis</h2>'
-Add-Html '  <!-- Section: Cost Analysis -->'
+
+# --- Stat boxes ---
+$costFmt = $totalCost.ToString('N2')
+$zeroCostRGs = if ($summary.ZeroCostResourceGroups) { $summary.ZeroCostResourceGroups } else { 0 }
+
+Add-Html '<div class="stat-row">'
+Add-Html '  <div class="stat-box">'
+Add-Html "    <div class=`"stat-value`">`$$costFmt</div>"
+Add-Html '    <div class="stat-label">Total Spend</div>'
+Add-Html '  </div>'
+Add-Html '  <div class="stat-box">'
+Add-Html "    <div class=`"stat-value`">$costDays days</div>"
+Add-Html '    <div class="stat-label">Lookback Period</div>'
+Add-Html '  </div>'
+Add-Html '  <div class="stat-box">'
+Add-Html "    <div class=`"stat-value`">$zeroCostRGs</div>"
+Add-Html '    <div class="stat-label">Zero-Cost RGs</div>'
+Add-Html '  </div>'
+Add-Html '</div>'
+
+# --- Top 20 RGs by cost (horizontal bar chart) ---
+$maxCost = if ($topCostRGs.Count -gt 0) { ($topCostRGs | ForEach-Object { [double]$_.TotalCost } | Measure-Object -Maximum).Maximum } else { 1 }
+$costBarH  = 22
+$costBarG  = 4
+$costStartX = 300
+$costBarMax = 420
+$costChartH = ($costBarH + $costBarG) * [math]::Max($topCostRGs.Count, 1) + 30
+
+Add-Html '<div class="chart-container">'
+Add-Html '  <h3>Top Resource Groups by Cost</h3>'
+Add-Html "  <svg viewBox=`"0 0 800 $costChartH`" xmlns=`"http://www.w3.org/2000/svg`">"
+
+$yPos = 20
+foreach ($rg in $topCostRGs) {
+    $rgName  = ConvertTo-SafeHtml $rg.ResourceGroup
+    $rgCost  = [double]$rg.TotalCost
+    $barW    = [math]::Max([math]::Round(($rgCost / $maxCost) * $costBarMax, 1), 2)
+    $costLbl = '$' + $rgCost.ToString('N2')
+    Add-Html "    <text x=`"$($costStartX - 8)`" y=`"$($yPos + 15)`" text-anchor=`"end`" fill=`"#8892b0`" font-size=`"11`">$rgName</text>"
+    Add-Html "    <rect x=`"$costStartX`" y=`"$yPos`" width=`"$barW`" height=`"$costBarH`" rx=`"3`" fill=`"#f59e0b`" opacity=`"0.85`"/>"
+    Add-Html "    <text x=`"$($costStartX + $barW + 6)`" y=`"$($yPos + 15)`" fill=`"#e6f1ff`" font-size=`"12`">$costLbl</text>"
+    $yPos += ($costBarH + $costBarG)
+}
+
+Add-Html '  </svg>'
+Add-Html '</div>'
+
+# --- Cost table ---
+Add-Html '<table>'
+Add-Html '  <tr><th>Resource Group</th><th>Subscription</th><th style="text-align:right">Cost</th></tr>'
+foreach ($rg in $topCostRGs) {
+    $rgName  = ConvertTo-SafeHtml $rg.ResourceGroup
+    $subName = ConvertTo-SafeHtml $rg.SubscriptionName
+    $costVal = '$' + ([double]$rg.TotalCost).ToString('N2')
+    Add-Html "  <tr><td>$rgName</td><td>$subName</td><td style=`"text-align:right`">$costVal</td></tr>"
+}
+Add-Html '</table>'
+
 Add-Html '</section>'
+
+# ── Section: Cleanup Candidates ──────────────────────────────────────────────
 
 Add-Html '<section id="cleanup-candidates">'
 Add-Html '  <h2>Cleanup Candidates</h2>'
-Add-Html '  <!-- Section: Cleanup Candidates -->'
+
+# --- Donut chart ---
+$categories = @(
+    [PSCustomObject]@{ Name='Stopped VMs';       Count=$stoppedVMs.Count;   Color='#ef4444' }
+    [PSCustomObject]@{ Name='Empty RGs';          Count=$emptyRGs.Count;     Color='#64ffda' }
+    [PSCustomObject]@{ Name='Empty App Plans';    Count=$emptyAppPlans.Count; Color='#8b5cf6' }
+    [PSCustomObject]@{ Name='Unused NSGs';        Count=$unusedNSGs.Count;   Color='#3b82f6' }
+    [PSCustomObject]@{ Name='Orphaned NICs';      Count=$orphanedNICs.Count; Color='#f59e0b' }
+    [PSCustomObject]@{ Name='Empty LBs';          Count=$emptyLBs.Count;     Color='#ec4899' }
+)
+$activeCats = $categories | Where-Object { $_.Count -gt 0 }
+$totalCands = ($categories | Measure-Object -Property Count -Sum).Sum
+
+Add-Html '<div class="chart-container" style="display:flex;gap:40px;align-items:center;flex-wrap:wrap;">'
+
+if ($totalCands -gt 0) {
+    $radius     = 90
+    $cx         = 150
+    $cy         = 150
+    $circumf    = 2 * [math]::PI * $radius
+    $strokeW    = 35
+    $offset     = 0
+
+    Add-Html "  <svg viewBox=`"0 0 300 300`" width=`"300`" height=`"300`" xmlns=`"http://www.w3.org/2000/svg`">"
+    # Background circle
+    Add-Html "    <circle cx=`"$cx`" cy=`"$cy`" r=`"$radius`" fill=`"none`" stroke=`"#1e293b`" stroke-width=`"$strokeW`"/>"
+
+    foreach ($cat in $activeCats) {
+        $pct        = $cat.Count / $totalCands
+        $dashLen    = [math]::Round($pct * $circumf, 2)
+        $dashGap    = [math]::Round($circumf - $dashLen, 2)
+        $dashOffset = [math]::Round(-$offset, 2)
+        Add-Html "    <circle cx=`"$cx`" cy=`"$cy`" r=`"$radius`" fill=`"none`" stroke=`"$($cat.Color)`" stroke-width=`"$strokeW`" stroke-dasharray=`"$dashLen $dashGap`" stroke-dashoffset=`"$dashOffset`" transform=`"rotate(-90 $cx $cy)`"/>"
+        $offset += $dashLen
+    }
+
+    # Center text
+    Add-Html "    <text x=`"$cx`" y=`"$($cy - 6)`" text-anchor=`"middle`" fill=`"#e6f1ff`" font-size=`"32`" font-weight=`"700`">$totalCands</text>"
+    Add-Html "    <text x=`"$cx`" y=`"$($cy + 16)`" text-anchor=`"middle`" fill=`"#8892b0`" font-size=`"12`">candidates</text>"
+    Add-Html '  </svg>'
+}
+
+# Legend
+Add-Html '  <div>'
+foreach ($cat in $activeCats) {
+    Add-Html "    <div style=`"display:flex;align-items:center;gap:8px;margin-bottom:6px;`">"
+    Add-Html "      <span style=`"width:12px;height:12px;border-radius:50%;background:$($cat.Color);display:inline-block;`"></span>"
+    Add-Html "      <span style=`"color:#ccd6f6;font-size:13px;`">$($cat.Name) ($($cat.Count))</span>"
+    Add-Html '    </div>'
+}
+Add-Html '  </div>'
+Add-Html '</div>'
+
+# --- Collapsible detail tables ---
+
+# Stopped VMs (HIGH)
+if ($stoppedVMs.Count -gt 0) {
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge badge-high`">HIGH</span> Stopped VMs ($($stoppedVMs.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Resource Group</th><th>Location</th><th>VM Size</th><th>Age (days)</th><th>Tags</th></tr>'
+    foreach ($vm in $stoppedVMs) {
+        $vmName = ConvertTo-SafeHtml $vm.name
+        $vmRG   = ConvertTo-SafeHtml $vm.resourceGroup
+        $vmTags = ConvertTo-SafeHtml "$($vm.tags)"
+        Add-Html "      <tr><td>$vmName</td><td>$vmRG</td><td>$($vm.location)</td><td>$($vm.vmSize)</td><td>$($vm.age_days)</td><td>$vmTags</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
+# Empty App Service Plans (HIGH if paid, LOW if free)
+if ($emptyAppPlans.Count -gt 0) {
+    $paidPlans = @($emptyAppPlans | Where-Object { $_.skuTier -notin @('Free','Dynamic') })
+    $planBadge = if ($paidPlans.Count -gt 0) { 'badge-high' } else { 'badge-low' }
+    $planPrio  = if ($paidPlans.Count -gt 0) { 'HIGH' } else { 'LOW' }
+
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge $planBadge`">$planPrio</span> Empty App Service Plans ($($emptyAppPlans.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Resource Group</th><th>SKU Tier</th><th>SKU Name</th><th>Age (days)</th></tr>'
+    foreach ($ap in $emptyAppPlans) {
+        $apName = ConvertTo-SafeHtml $ap.name
+        $apRG   = ConvertTo-SafeHtml $ap.resourceGroup
+        Add-Html "      <tr><td>$apName</td><td>$apRG</td><td>$($ap.skuTier)</td><td>$($ap.skuName)</td><td>$($ap.age_days)</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
+# Orphaned NICs (LOW)
+if ($orphanedNICs.Count -gt 0) {
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge badge-low`">LOW</span> Orphaned NICs ($($orphanedNICs.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Resource Group</th><th>Private IP</th><th>Managed By</th></tr>'
+    foreach ($nic in $orphanedNICs) {
+        $nicName = ConvertTo-SafeHtml $nic.name
+        $nicRG   = ConvertTo-SafeHtml $nic.resourceGroup
+        $nicMB   = ConvertTo-SafeHtml "$($nic.managedBy)"
+        Add-Html "      <tr><td>$nicName</td><td>$nicRG</td><td>$($nic.privateIP)</td><td>$nicMB</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
+# Empty Resource Groups (LOW)
+if ($emptyRGs.Count -gt 0) {
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge badge-low`">LOW</span> Empty Resource Groups ($($emptyRGs.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Location</th></tr>'
+    foreach ($rg in $emptyRGs) {
+        $rgName = ConvertTo-SafeHtml $rg.name
+        Add-Html "      <tr><td>$rgName</td><td>$($rg.location)</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
+# Unused NSGs (LOW)
+if ($unusedNSGs.Count -gt 0) {
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge badge-low`">LOW</span> Unused NSGs ($($unusedNSGs.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Resource Group</th></tr>'
+    foreach ($nsg in $unusedNSGs) {
+        $nsgName = ConvertTo-SafeHtml $nsg.name
+        $nsgRG   = ConvertTo-SafeHtml $nsg.resourceGroup
+        Add-Html "      <tr><td>$nsgName</td><td>$nsgRG</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
+# Empty Load Balancers (MEDIUM)
+if ($emptyLBs.Count -gt 0) {
+    Add-Html '<details>'
+    Add-Html "  <summary><span class=`"badge badge-medium`">MEDIUM</span> Empty Load Balancers ($($emptyLBs.Count))</summary>"
+    Add-Html '  <div class="detail-content">'
+    Add-Html '    <table>'
+    Add-Html '      <tr><th>Name</th><th>Resource Group</th></tr>'
+    foreach ($lb in $emptyLBs) {
+        $lbName = ConvertTo-SafeHtml $lb.name
+        $lbRG   = ConvertTo-SafeHtml $lb.resourceGroup
+        Add-Html "      <tr><td>$lbName</td><td>$lbRG</td></tr>"
+    }
+    Add-Html '    </table>'
+    Add-Html '  </div>'
+    Add-Html '</details>'
+}
+
 Add-Html '</section>'
 
+# ── Section: Governance Gaps ─────────────────────────────────────────────────
+
 Add-Html '<section id="governance">'
-Add-Html '  <h2>Governance</h2>'
-Add-Html '  <!-- Section: Governance -->'
+Add-Html '  <h2>Governance Gaps</h2>'
+
+# --- Tag coverage progress bar ---
+$taggedPct = [math]::Round(($totalResources - $untaggedCount) / [math]::Max($totalResources, 1) * 100, 1)
+$taggedCount = $totalResources - $untaggedCount
+$fillW = [math]::Round($taggedPct / 100 * 560, 1)
+
+Add-Html '<div class="chart-container">'
+Add-Html '  <h3>Tag Coverage</h3>'
+Add-Html '  <svg viewBox="0 0 600 50" xmlns="http://www.w3.org/2000/svg">'
+Add-Html '    <rect x="20" y="10" width="560" height="28" rx="6" fill="#ef4444" opacity="0.3"/>'
+Add-Html "    <rect x=`"20`" y=`"10`" width=`"$fillW`" height=`"28`" rx=`"6`" fill=`"#10b981`" opacity=`"0.85`"/>"
+Add-Html "    <text x=`"300`" y=`"30`" text-anchor=`"middle`" fill=`"#e6f1ff`" font-size=`"13`" font-weight=`"600`">$taggedPct% tagged ($taggedCount of $totalResources)</text>"
+Add-Html '  </svg>'
+Add-Html '</div>'
+
+# --- Untagged by type table ---
+$untaggedByType = $untagged | Group-Object -Property type | ForEach-Object {
+    [PSCustomObject]@{
+        Type  = $_.Name
+        Count = ($_.Group | Measure-Object -Property count_ -Sum).Sum
+    }
+} | Sort-Object Count -Descending
+
+Add-Html '<table>'
+Add-Html '  <tr><th>Resource Type</th><th>Count</th></tr>'
+foreach ($ut in $untaggedByType) {
+    $utType = ConvertTo-SafeHtml $ut.Type
+    Add-Html "  <tr><td>$utType</td><td>$([int]$ut.Count)</td></tr>"
+}
+Add-Html '</table>'
+
 Add-Html '</section>'
 
 Add-Html '<section id="inventory">'
