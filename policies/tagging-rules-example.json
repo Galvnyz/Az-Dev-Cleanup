@@ -1,0 +1,82 @@
+{
+  "rules": [
+    {
+      "name": "Production resources by RG naming convention",
+      "matchMode": "all",
+      "match": {
+        "resourceGroup": "*-prod-*",
+        "location": "eastus"
+      },
+      "tags": {
+        "environment": "production",
+        "owner": "platform-team@contoso.com",
+        "project": "core-infrastructure"
+      }
+    },
+    {
+      "name": "Dev sandbox resources",
+      "matchMode": "all",
+      "match": {
+        "resourceGroup": "*-dev-*"
+      },
+      "tags": {
+        "environment": "dev",
+        "owner": "dev-leads@contoso.com",
+        "expiry-date": "+90d"
+      }
+    },
+    {
+      "name": "Multi-team staging (OR logic example)",
+      "matchMode": "any",
+      "match": {
+        "resourceGroup": "regex:^(alpha|beta|gamma)-staging-",
+        "tagEquals": { "environment": "staging" }
+      },
+      "tags": {
+        "environment": "staging",
+        "owner": "release-team@contoso.com"
+      }
+    },
+    {
+      "name": "VMs owned by their creator",
+      "matchMode": "all",
+      "match": {
+        "resourceType": "Microsoft.Compute/virtualMachines",
+        "missingTags": ["owner"]
+      },
+      "tags": {
+        "owner": "{createdBy}",
+        "cleanup-tagged-on": "{today}"
+      }
+    },
+    {
+      "name": "Storage accounts in specific subscription",
+      "matchMode": "all",
+      "match": {
+        "resourceType": "Microsoft.Storage/storageAccounts",
+        "subscription": "Dev-Test-Sub"
+      },
+      "tags": {
+        "project": "shared-storage",
+        "environment": "dev"
+      }
+    },
+    {
+      "name": "Unowned fallback — mark for review",
+      "matchMode": "all",
+      "match": {
+        "missingTags": ["owner"]
+      },
+      "tags": {
+        "owner": "unassigned",
+        "cleanup-status": "candidate",
+        "cleanup-date": "+30d",
+        "cleanup-tagged-on": "{today}"
+      }
+    }
+  ],
+  "defaults": {
+    "project": "unknown",
+    "environment": "dev"
+  }
+}
