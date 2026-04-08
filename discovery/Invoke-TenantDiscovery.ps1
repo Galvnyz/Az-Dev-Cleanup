@@ -36,6 +36,11 @@
 .PARAMETER PageSize
     Number of results per Resource Graph page. Default: 1000 (API max).
 
+.PARAMETER SkipConnect
+    Skip the automatic Azure login prompt. Use in pipelines where Connect-AzAccount
+    is managed externally. Without this flag the script calls Connect-AzAccount if
+    no active session is detected.
+
 .EXAMPLE
     # Full discovery across all subscriptions
     .\Invoke-TenantDiscovery.ps1
@@ -45,6 +50,9 @@
 
     # Target a single subscription
     .\Invoke-TenantDiscovery.ps1 -SubscriptionId "xxxx-xxxx-xxxx"
+
+    # Pipeline use — manage auth externally, suppress auto-connect
+    .\Invoke-TenantDiscovery.ps1 -SkipConnect
 #>
 
 [CmdletBinding()]
@@ -63,6 +71,9 @@ param(
 
     [Parameter()]
     [switch]$SkipEntraId,
+
+    [Parameter()]
+    [switch]$SkipConnect,
 
     [Parameter()]
     [ValidateRange(1, 90)]
