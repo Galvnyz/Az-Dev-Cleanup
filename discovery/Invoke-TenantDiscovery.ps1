@@ -36,6 +36,11 @@
 .PARAMETER PageSize
     Number of results per Resource Graph page. Default: 1000 (API max).
 
+.PARAMETER SkipConnect
+    Skip the automatic Azure login prompt. Use in pipelines where Connect-AzAccount
+    is managed externally. Without this flag the script calls Connect-AzAccount if
+    no active session is detected.
+
 .EXAMPLE
     # Full discovery across all subscriptions
     .\Invoke-TenantDiscovery.ps1
@@ -45,6 +50,9 @@
 
     # Target a single subscription
     .\Invoke-TenantDiscovery.ps1 -SubscriptionId "xxxx-xxxx-xxxx"
+
+    # Pipeline use — manage auth externally, suppress auto-connect
+    .\Invoke-TenantDiscovery.ps1 -SkipConnect
 #>
 
 [CmdletBinding()]
@@ -63,6 +71,9 @@ param(
 
     [Parameter()]
     [switch]$SkipEntraId,
+
+    [Parameter()]
+    [switch]$SkipConnect,
 
     [Parameter()]
     [ValidateRange(1, 90)]
@@ -97,6 +108,29 @@ New-Item -ItemType Directory -Path "$OutputDir/queries" -Force | Out-Null
 
 Write-Log "=== Azure Tenant Discovery Started ==="
 Write-Log "Output directory: $OutputDir"
+
+# ── Azure auth check ─────────────────────────────────────────────────────────
+
+$azContext = Get-AzContext -ErrorAction SilentlyContinue
+if (-not ($azContext -and $azContext.Account)) {
+    if ($SkipConnect) {
+        throw (
+            "No active Azure session. Run the following then re-run discovery:`n" +
+            "        Connect-AzAccount`n" +
+            "        Connect-AzAccount -TenantId 'your-tenant-id'   # to target a specific tenant"
+        )
+    }
+
+    Write-Log "No active Azure session found. Launching Connect-AzAccount..."
+    Connect-AzAccount | Out-Null
+
+    $azContext = Get-AzContext -ErrorAction SilentlyContinue
+    if (-not ($azContext -and $azContext.Account)) {
+        throw "Connection was not completed. Re-run the script to try again."
+    }
+
+    Write-Log "Connected as $($azContext.Account.Id)"
+}
 
 # Resolve subscriptions
 if ($SubscriptionId) {
