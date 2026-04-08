@@ -109,6 +109,29 @@ New-Item -ItemType Directory -Path "$OutputDir/queries" -Force | Out-Null
 Write-Log "=== Azure Tenant Discovery Started ==="
 Write-Log "Output directory: $OutputDir"
 
+# ── Azure auth check ─────────────────────────────────────────────────────────
+
+$azContext = Get-AzContext -ErrorAction SilentlyContinue
+if (-not ($azContext -and $azContext.Account)) {
+    if ($SkipConnect) {
+        throw (
+            "No active Azure session. Run the following then re-run discovery:`n" +
+            "        Connect-AzAccount`n" +
+            "        Connect-AzAccount -TenantId 'your-tenant-id'   # to target a specific tenant"
+        )
+    }
+
+    Write-Log "No active Azure session found. Launching Connect-AzAccount..."
+    Connect-AzAccount | Out-Null
+
+    $azContext = Get-AzContext -ErrorAction SilentlyContinue
+    if (-not ($azContext -and $azContext.Account)) {
+        throw "Connection was not completed. Re-run the script to try again."
+    }
+
+    Write-Log "Connected as $($azContext.Account.Id)"
+}
+
 # Resolve subscriptions
 if ($SubscriptionId) {
     $subscriptions = $SubscriptionId | ForEach-Object { Get-AzSubscription -SubscriptionId $_ }
