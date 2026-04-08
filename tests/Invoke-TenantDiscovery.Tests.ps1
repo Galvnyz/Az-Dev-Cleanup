@@ -54,7 +54,7 @@ Describe 'Invoke-TenantDiscovery — auth check' {
               -OutputDir 'TestDrive:\reports' *>&1 | Out-Null
         } | Should -Not -Throw
 
-        Should -Invoke Connect-AzAccount -Times 1
+        Should -Invoke Connect-AzAccount -Times 1 -Exactly
     }
 
     It 'throws if Connect-AzAccount completes but context is still null (user cancelled browser)' {
