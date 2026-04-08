@@ -491,7 +491,36 @@ if (-not $SkipCostData) {
     Write-Log "  Phase 3 total: $([math]::Round($phase3Timer.Elapsed.TotalSeconds, 1))s"
 
     if ($costByRG.Count -gt 0) {
-        $costReport = $costByRG.Values | Sort-Object TotalCost -Descending
+        # Fetch RG owner tags from Resource Graph — non-fatal if unavailable
+        $rgOwnerMap = @{}
+        try {
+            $rgTagQuery = @'
+resourcecontainers
+| where type == "microsoft.resources/subscriptions/resourcegroups"
+| project subscriptionId, rg = name,
+          Owner = coalesce(tostring(tags.Owner), tostring(tags.owner))
+| where isnotempty(Owner)
+'@
+            $rgTagSkipToken = $null
+            do {
+                $rgTagParams = @{ Query = $rgTagQuery; First = 1000; Subscription = $subIds }
+                if ($rgTagSkipToken) { $rgTagParams.SkipToken = $rgTagSkipToken }
+                $rgTagPage = Search-AzGraph @rgTagParams
+                foreach ($r in $rgTagPage.Data) {
+                    $rgOwnerMap["$($r.subscriptionId)/$($r.rg)".ToLower()] = $r.Owner
+                }
+                $rgTagSkipToken = $rgTagPage.SkipToken
+            } while ($null -ne $rgTagSkipToken)
+            Write-Log "  RG owner tags: $($rgOwnerMap.Count) resource group(s) with owner tag"
+        } catch {
+            Write-Log "  RG owner tag lookup skipped (non-fatal): $_" -Level "WARN"
+        }
+
+        $costReport = $costByRG.Values | ForEach-Object {
+            $key = "$($_.SubscriptionId)/$($_.ResourceGroup)".ToLower()
+            $owner = if ($rgOwnerMap.ContainsKey($key)) { $rgOwnerMap[$key] } else { '' }
+            $_ | Add-Member -NotePropertyName Owner -NotePropertyValue $owner -PassThru
+        } | Sort-Object TotalCost -Descending
         $costReport | Export-Csv -Path "$OutputDir/cost-by-resource-group.csv" -NoTypeInformation
         Write-Log "Cost analysis: $($costReport.Count) resource groups"
 

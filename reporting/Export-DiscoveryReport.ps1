@@ -291,6 +291,7 @@ if ($inventory.Count -gt 0) {
             $dormant = if ($dormantByRG.ContainsKey($rgLower)) { $dormantByRG[$rgLower] } else { 0 }
             $touched = if ($totalByRG.ContainsKey($rgLower)) { $totalByRG[$rgLower] } else { 0 }
             $dormantPct = if ($touched -gt 0) { [math]::Round(($dormant / $touched) * 100) } else { $null }
+            $owner = if ($cost -and $cost.Owner) { $cost.Owner } else { '' }
 
             [PSCustomObject]@{
                 ResourceGroup       = $rgName
@@ -299,6 +300,7 @@ if ($inventory.Count -gt 0) {
                 MonthlyCost         = $monthlyCost
                 DaysSinceActivity   = $lastActivityDays
                 LastCaller          = $lastCaller
+                Owner               = $owner
                 DormantResources    = $dormant
                 TouchedResources    = $touched
                 DormantPct          = $dormantPct
